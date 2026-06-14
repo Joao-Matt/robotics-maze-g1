@@ -1,0 +1,29 @@
+project:
+  name: robotics-maze-g1
+
+sim:
+  timestep: 0.002
+  control_dt: 0.02
+  default_duration_s: 3.0
+  max_episode_time_s: 180
+
+maze:
+  cell_size_m: 1.0
+  width_cells: 15
+  height_cells: 15
+  wall_height_m: 1.2
+  wall_thickness_m: 0.12
+  min_corridor_width_m: 1.0
+
+robot:
+  model_xml_path: assets/mujoco_menagerie/unitree_g1/scene.xml
+  initial_keyframe: stand
+  safety_radius_m: 0.45
+  goal_tolerance_m: 0.5
+  max_forward_speed_mps: 0.25
+  max_yaw_rate_radps: 0.5
+
+logging:
+  output_root: runs
+  state_rate_hz: 50
+  sensor_rate_hz: 10
