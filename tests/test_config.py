@@ -25,6 +25,7 @@ def test_default_config_has_g1_model_path():
     config = load_config(PROJECT_ROOT / "configs" / "default.yaml")
 
     assert config["robot"]["model_xml_path"] == "assets/mujoco_menagerie/unitree_g1/scene.xml"
+    assert config["robot"]["base_model_xml_path"] == "assets/mujoco_menagerie/unitree_g1/g1.xml"
     assert config["robot"]["initial_keyframe"] == "stand"
 
 

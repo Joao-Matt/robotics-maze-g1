@@ -71,8 +71,21 @@ Each milestone should end with:
 
 - a command that runs
 - a test that passes
-- an artifact/log/plot/screenshot/output file
-- a short note explaining what was validated
+- a view/inspect command when the milestone has visible behavior
+- an artifact/log/plot/screenshot/output file that can be opened after the run
+- a short note explaining what was visually inspected and what was validated
+
+Do not mark a milestone complete only because tests pass. If the milestone has a visible system state, such as a maze, robot scene, planned path, map, run report, or live status panel, the milestone should include an explicit command for viewing or inspecting that state and the worklog should record what was seen.
+
+User-facing commands should follow the visible command contract:
+
+- write inspectable artifacts under `runs/visual/`
+- print the exact artifact paths every time
+- open the artifact with `xdg-open` when `DISPLAY` is available
+- keep a live viewer command for interactive MuJoCo scenes when possible
+- preserve command exit codes, especially for tests
+
+This applies even to infrastructure commands such as `make smoke` and `make test`; they should create visible reports, not only console output.
 
 ### 0.4 Use configs, not hardcoded values
 
@@ -198,13 +211,16 @@ Aim for commands like these:
 ```bash
 make setup
 make smoke
+make view-smoke
 make run SEED=123 MODE=oracle
+make view-run SEED=123 MODE=oracle
 make run SEED=123 MODE=autonomous
 make collect SEEDS="1 2 3 4 5"
 make report RUN_DIR=runs/latest
 make demo SEED=123
 make log
 make test
+make view-test
 ```
 
 Expected meanings:
@@ -212,13 +228,16 @@ Expected meanings:
 | Command | Purpose |
 |---|---|
 | `make setup` | Install dependencies and validate environment. |
-| `make smoke` | Run a tiny non-demo simulation to prove MuJoCo and imports work. |
-| `make run` | Run one episode with a chosen seed. |
+| `make smoke` | Run a tiny environment/config check and write a visible HTML report. |
+| `make view-smoke` | Open the smoke report. |
+| `make run` | Open a side-by-side visual dashboard, then launch the live MuJoCo viewer for the chosen seed. |
+| `make view-run` | Run one episode headlessly and open the side-by-side visual dashboard. |
 | `make collect` | Run multiple seeds and store datasets. |
 | `make report` | Generate KPI report from collected runs. |
 | `make demo` | Launch the live demo view and KPI panel. |
 | `make log` | Print or validate the current worklog summary. Optional, but useful. |
-| `make test` | Run unit tests. |
+| `make test` | Run unit tests and write visible text/HTML reports while preserving pytest's exit code. |
+| `make view-test` | Open the latest test HTML report. |
 
 ---
 
@@ -627,7 +646,9 @@ Also support saving an image to `runs/.../maze.png` later.
 - `generate_maze(seed=123)` is deterministic.
 - `validate_maze(maze)` passes for many seeds.
 - Unit tests verify path existence.
-- A maze can be printed or saved as an image.
+- A maze can be printed and saved as a viewable artifact.
+- A dedicated command such as `make view-maze SEED=123` generates a human-inspectable maze artifact and opens it when display support is available.
+- The worklog records the exact maze seed inspected and the artifact path used for visual inspection.
 
 ## Codex prompt for this milestone
 
@@ -638,12 +659,14 @@ Create maze/generator.py, maze/validator.py, maze/grid.py, and maze/visualizatio
 
 Do not integrate MuJoCo yet. Do not implement robot control yet. Add a small CLI or script option that prints an ASCII maze for a given seed.
 
+Add an explicit Makefile command for visual inspection, for example `make view-maze SEED=123`, that saves the ASCII maze and a simple image artifact under `runs/`. If a desktop viewer is available, the command may open the image; otherwise it must print the artifact paths clearly.
+
 Also update docs/worklog.md for this milestone. Include what changed, why the main design choices were made, commands/tests used for validation, problems encountered, current limitations, and next actions. Do not skip the worklog even if the code changes are small.
 ```
 
 ## Stop here until
 
-You can generate and validate mazes for at least 20 seeds without MuJoCo.
+You can generate and validate mazes for at least 20 seeds without MuJoCo, and you can inspect at least one saved maze artifact from a documented command.
 
 ---
 
@@ -678,13 +701,12 @@ This milestone connects the pure maze logic to simulation, but still does not re
 
 Define this once and document it.
 
-Example:
-
 ```text
 cell(row, col)
-x = col * cell_size_m
-y = row * cell_size_m
-world origin = maze lower-left or grid center
+world origin = maze center
+x = (col - (width_cells - 1) / 2) * cell_size_m
+y = ((height_cells - 1) / 2 - row) * cell_size_m
+z = 0 is floor height
 ```
 
 Be consistent across:
@@ -699,11 +721,13 @@ Be consistent across:
 ## Acceptance criteria
 
 - `docs/worklog.md` is updated with decisions made, validation performed, problems encountered, current limitations, and next actions for this milestone.
-- `make run SEED=123 MODE=none` loads G1 inside the generated maze.
+- `make run SEED=123 DURATION=30` opens a side-by-side dashboard first, then launches the live MuJoCo viewer with G1 inside the generated maze.
 - Walls are visible and collidable.
 - Start and goal markers are visible.
 - The robot starts in a free corridor, not inside a wall.
 - A generated XML/debug file is saved for inspection.
+- A dedicated command such as `make view-world SEED=123` opens the generated world's top-down artifact.
+- `make view-run SEED=123 DURATION=3` opens a dashboard with the 2D maze representation next to a MuJoCo render of the generated maze world.
 
 ## Debugging checklist
 
@@ -727,7 +751,9 @@ Implement only Milestone 3: convert the seeded maze grid into a MuJoCo world.
 
 Add sim/world_builder.py that takes a Maze object and config values, then creates a MuJoCo-compatible scene containing floor, wall geoms, a start marker, a goal marker, and the Unitree G1 model placed at the start. Keep coordinate conversion explicit and documented. Save the generated scene XML or equivalent debug artifact so it can be inspected.
 
-Update scripts/run_episode.py so that --seed generates a maze and loads it in MuJoCo, but do not implement navigation yet. The robot may stand still. Add sanity checks that start and goal are free and that the robot start position is not inside a wall.
+Use full-cell block walls for Milestone 3 so the generated world matches the occupancy grid directly. Keep `wall_thickness_m` in config for a later thin-wall representation, but do not apply it in this milestone.
+
+Update scripts/run_episode.py so that --seed generates a maze and loads it in MuJoCo by default, but keep an explicit `--world empty` fallback for the original Milestone 1 scene. Do not implement navigation yet. The robot may stand still. Add sanity checks that start and goal are free and that the robot start position is not inside a wall.
 
 Also update docs/worklog.md for this milestone. Include what changed, why the main design choices were made, commands/tests used for validation, problems encountered, current limitations, and next actions. Do not skip the worklog even if the code changes are small.
 ```

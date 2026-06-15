@@ -17,7 +17,9 @@ maze:
 
 robot:
   model_xml_path: assets/mujoco_menagerie/unitree_g1/scene.xml
+  base_model_xml_path: assets/mujoco_menagerie/unitree_g1/g1.xml
   initial_keyframe: stand
+  initial_base_height_m: 0.79
   safety_radius_m: 0.45
   goal_tolerance_m: 0.5
   max_forward_speed_mps: 0.25

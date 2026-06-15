@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 import math
+import struct
 import time
+import zlib
 
 from sim.robot_interface import RobotInterface
 
@@ -61,7 +63,14 @@ class MuJoCoRunner:
             ) from exc
         return resolve_project_path(raw_path, self.project_root)
 
-    def run(self, duration_s: float | None = None, viewer: bool = False) -> Dict[str, Any]:
+    def run(
+        self,
+        duration_s: float | None = None,
+        viewer: bool = False,
+        render_path: Path | None = None,
+        render_width: int = 640,
+        render_height: int = 480,
+    ) -> Dict[str, Any]:
         """Run the configured model and return a state summary."""
         model_path = self.model_path
         if not model_path.exists():
@@ -98,6 +107,14 @@ class MuJoCoRunner:
                 mujoco.mj_step(model, data)
 
         state = interface.get_state()
+        if render_path:
+            try:
+                self._save_render(mujoco, model, data, render_path, render_width, render_height)
+                state["render_path"] = str(render_path)
+            except Exception as exc:
+                state["render_path"] = None
+                state["render_error"] = str(exc)
+
         state.update(
             {
                 "status": "completed",
@@ -149,3 +166,54 @@ class MuJoCoRunner:
                 elapsed = time.time() - step_start
                 if elapsed < timestep:
                     time.sleep(timestep - elapsed)
+
+    def _save_render(
+        self,
+        mujoco: Any,
+        model: Any,
+        data: Any,
+        path: Path,
+        width: int,
+        height: int,
+    ) -> None:
+        """Save a dependency-free final RGB frame as PNG or binary PPM."""
+        if width <= 0 or height <= 0:
+            raise MuJoCoRunnerError(f"Render dimensions must be positive, got {width}x{height}")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        renderer = mujoco.Renderer(model, width=width, height=height)
+        try:
+            renderer.update_scene(data)
+            pixels = renderer.render()
+        finally:
+            close = getattr(renderer, "close", None)
+            if close:
+                close()
+
+        if path.suffix.lower() == ".png":
+            _write_png(path, pixels)
+        else:
+            with path.open("wb") as file:
+                file.write(f"P6\n{width} {height}\n255\n".encode("ascii"))
+                file.write(pixels[:, :, :3].tobytes())
+
+
+def _write_png(path: Path, pixels: Any) -> None:
+    """Write RGB pixels as a simple no-dependency PNG."""
+    height, width = pixels.shape[:2]
+    rgb = pixels[:, :, :3]
+    raw_rows = b"".join(b"\x00" + rgb[row].tobytes() for row in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        payload = kind + data
+        return (
+            struct.pack(">I", len(data))
+            + payload
+            + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
+        )
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk("IHDR".encode("ascii"), struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    png += chunk("IDAT".encode("ascii"), zlib.compress(raw_rows))
+    png += chunk("IEND".encode("ascii"), b"")
+    path.write_bytes(png)
