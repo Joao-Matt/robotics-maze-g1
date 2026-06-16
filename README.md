@@ -2,7 +2,7 @@
 
 Milestone-based MuJoCo + Unitree G1 maze-navigation assignment repo.
 
-This repository currently implements **Milestone 3**: project scaffold, reproducible Python environment, configuration loading, MuJoCo installation, Unitree G1 model bring-up, deterministic maze generation/validation, maze-to-MuJoCo world generation, visible command artifacts, tests, and engineering worklog. Navigation, data logging, metrics, and demo behavior are intentionally left for later milestones.
+This repository currently implements **Milestone 5**: project scaffold, reproducible Python environment, configuration loading, MuJoCo installation, Unitree G1 model bring-up, deterministic maze generation/validation, maze-to-MuJoCo world generation, oracle/debug path planning, conservative waypoint-following control math, visible command artifacts, tests, and engineering worklog. Direct G1 locomotion, sensor-based autonomy, data logging, metrics, and demo behavior are intentionally left for later milestones.
 
 ## Repository Layout
 
@@ -11,7 +11,7 @@ configs/        YAML configuration files
 assets/         third-party MuJoCo model assets via Git submodules
 sim/            simulation integration and shared setup helpers
 maze/           deterministic maze generation, validation, and visualization
-nav/            future navigation, planning, localization, and control code
+nav/            oracle/debug planning and waypoint controller now, future localization/control code
 data/           future run logging and data schema code
 eval/           future KPI and report code
 demo/           future live demo entrypoints
@@ -56,12 +56,21 @@ make maze SEED=123
 make view-maze SEED=123 MAZE_CELL_PX=48
 make world SEED=123
 make view-world SEED=123
+make plan SEED=123
+make view-plan SEED=123 MAZE_CELL_PX=48
+make follow SEED=123
+make view-follow SEED=123 MAZE_CELL_PX=48
+make sim-follow SEED=123
+make view-sim-follow SEED=123
 make run SEED=123 DURATION=3
 make view-run SEED=123 DURATION=3
+make milestone_3 SEED=123 DURATION=30
+make milestone_4 SEED=123
+make milestone_5 SEED=123
 make view SEED=123 VIEW_DURATION=30
 ```
 
-`make smoke` loads `configs/default.yaml`, prints a short environment/config summary, and writes `runs/visual/smoke_latest.html`. `make test` validates config loading, package imports, runner error handling, maze determinism/solvability, and generated-world XML while writing `runs/visual/test_latest.txt` and `runs/visual/test_latest.html`. `make maze` prints a seeded ASCII maze with the BFS validation path overlaid and writes SVG/ASCII/PGM artifacts. `make world` builds a MuJoCo maze world XML with the G1 placed at the start cell. `make run` opens a side-by-side visual dashboard first, then launches the live MuJoCo passive viewer in the generated maze world. `make view-run` runs headlessly and opens the same side-by-side dashboard with the final render.
+`make smoke` loads `configs/default.yaml`, prints a short environment/config summary, and writes `runs/visual/smoke_latest.html`. `make test` validates config loading, package imports, runner error handling, maze determinism/solvability, generated-world XML, oracle planning, and controller math while writing `runs/visual/test_latest.txt` and `runs/visual/test_latest.html`. `make maze` prints a seeded ASCII maze with the BFS validation path overlaid and writes SVG/ASCII/PGM artifacts. `make world` builds a MuJoCo maze world XML with the G1 placed at the start cell. `make plan` computes an explicit oracle/debug path and saves waypoint/path artifacts. `make follow` simulates the waypoint follower with a point-robot proxy and saves trajectory artifacts. `make sim-follow` opens a MuJoCo viewer with a visible proxy body moving through the generated maze. `make view-sim-follow` runs the same proxy simulation headlessly and opens a dashboard. `make run` opens a side-by-side visual dashboard first, then launches the live MuJoCo passive viewer in the generated maze world.
 
 ## How To See Things
 
@@ -72,8 +81,15 @@ make view-smoke
 make view-test
 make view-maze SEED=123 MAZE_CELL_PX=48
 make view-world SEED=123
+make view-plan SEED=123 MAZE_CELL_PX=48
+make view-follow SEED=123 MAZE_CELL_PX=48
+make sim-follow SEED=123
+make view-sim-follow SEED=123
 make run SEED=123 DURATION=30
 make view-run SEED=123 DURATION=3
+make milestone_3 SEED=123 DURATION=30
+make milestone_4 SEED=123
+make milestone_5 SEED=123
 ```
 
 The `view-*` commands run the underlying command and open the latest artifact with `xdg-open` when `DISPLAY` is available. If no desktop opener is available, the command prints the exact artifact path.
@@ -90,6 +106,17 @@ runs/visual/maze_seed-123.pgm
 runs/visual/world_seed-123.xml
 runs/visual/world_seed-123_summary.json
 runs/visual/world_seed-123_topdown.svg
+runs/visual/plan_seed-123_oracle.svg
+runs/visual/plan_seed-123_oracle.json
+runs/visual/follow_seed-123_point.svg
+runs/visual/follow_seed-123_point.json
+runs/visual/sim_follow_seed-123_world.xml
+runs/visual/sim_follow_seed-123_topdown.svg
+runs/visual/sim_follow_seed-123_path.svg
+runs/visual/sim_follow_seed-123_final.png
+runs/visual/sim_follow_seed-123_dashboard.html
+runs/visual/sim_follow_seed-123_summary.json
+runs/visual/sim_follow_seed-123_trajectory.csv
 runs/visual/run_seed-123_dashboard.html
 runs/visual/run_seed-123_preview.png
 runs/visual/run_seed-123_summary.json
@@ -128,11 +155,63 @@ For a non-realtime inspection run:
 make view-run SEED=123 DURATION=3
 ```
 
+To run the full Milestone 3 acceptance bundle:
+
+```bash
+make milestone_3 SEED=123 DURATION=30
+```
+
+This runs tests, opens the generated world's top-down artifact, opens the side-by-side run dashboard, and then launches the live MuJoCo viewer.
+
 To build only the generated MuJoCo maze world:
 
 ```bash
 make world SEED=123
 make view-world SEED=123
+```
+
+To compute and view the explicit oracle/debug path:
+
+```bash
+make view-plan SEED=123 MAZE_CELL_PX=48
+```
+
+This writes `runs/visual/plan_seed-123_oracle.svg` and `runs/visual/plan_seed-123_oracle.json`. It uses the generated maze grid directly, so it is not sensor-based autonomy and it does not move the robot.
+
+To test the waypoint follower in point-robot debug mode:
+
+```bash
+make view-follow SEED=123 MAZE_CELL_PX=48
+```
+
+This writes `runs/visual/follow_seed-123_point.svg` and `runs/visual/follow_seed-123_point.json`. It validates controller math and waypoint progression, but it is not G1 walking.
+
+To watch the waypoint follower inside MuJoCo with a moving proxy:
+
+```bash
+make sim-follow SEED=123
+```
+
+This opens the MuJoCo viewer and moves an orange proxy body through the generated maze using the waypoint follower. The G1 remains standing at the start as a humanoid reference model; this is not G1 walking.
+
+For a non-interactive MuJoCo proxy-follow inspection:
+
+```bash
+make view-sim-follow SEED=123
+```
+
+This opens `runs/visual/sim_follow_seed-123_dashboard.html` with the top-down maze, planned path, final MuJoCo render, trajectory CSV, and summary.
+
+To run the full Milestone 4 acceptance bundle:
+
+```bash
+make milestone_4 SEED=123
+```
+
+To run the full Milestone 5 acceptance bundle:
+
+```bash
+make milestone_5 SEED=123
 ```
 
 The generated world uses the maze center as the MuJoCo origin:
@@ -163,4 +242,4 @@ The generated maze world is written under `runs/visual/` and uses `g1.xml` as it
 
 ## Next Milestone
 
-Milestone 4 should add an explicit oracle planner baseline over the generated maze grid. Keep the boundary clear: simulator ground truth may be used for debugging and evaluation, but final navigation should not secretly depend on privileged simulator state.
+Milestone 6 should add sensor simulation and a consistent timebase. Keep the boundary clear: the current planner/controller path is oracle/debug with a point-robot proxy, and direct G1 locomotion still needs a dedicated adapter before claiming physical maze traversal.

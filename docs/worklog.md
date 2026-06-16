@@ -367,3 +367,180 @@ Make `make run` show the generated maze world in realtime, and make the first vi
 
 ### Next actions
 Milestone 4 should add oracle path planning and overlay the planned path in both the 2D dashboard and MuJoCo world.
+
+## 2026-06-16 - Milestone 4: Oracle planner baseline
+
+### Goal
+Add an explicit oracle/debug planner that uses the generated maze grid to compute a path and world-coordinate waypoints. This is not sensor-based autonomy and does not command the robot.
+
+### Changes made
+- Added `nav/planner.py` with 4-connected A* using Manhattan distance.
+- Added obstacle inflation based on robot safety radius and maze cell size.
+- Added waypoint conversion using the same cell-to-world convention as `sim/world_builder.py`.
+- Added `scripts/plan_path.py`.
+- Added `make plan SEED=...`, `make view-plan SEED=...`, and `make milestone_4 SEED=...`.
+- Added tests for A*, blocked grids, inflation behavior, generated-maze planning, waypoint conversion, and wall-cell rejection.
+- Updated README and the milestone plan with Milestone 4 commands and oracle/debug boundaries.
+
+### Key decisions
+- [PLANNING][GROUND_TRUTH_BOUNDARY] Decision: label the planner as `mode=oracle`.
+  - Why: it uses the generated maze grid directly and should not be mistaken for sensor-based autonomy.
+  - Alternatives considered: expose it as the main navigation planner.
+  - Tradeoff accepted: it is useful for debugging and future control work, but not a final autonomy claim.
+- [PLANNING] Decision: use A* with Manhattan distance and 4-connected motion.
+  - Why: it matches grid corridors, avoids diagonal corner cutting, and is easy to explain.
+  - Alternatives considered: BFS, diagonal A*, continuous planning.
+  - Tradeoff accepted: paths are grid-aligned rather than smooth.
+- [MAZE_VALIDITY] Decision: inflate obstacles by continuous clearance from wall-cell boxes rather than simply blocking adjacent cells.
+  - Why: with 1.0 m cells and a 0.45 m robot safety radius, naive one-cell inflation would erase valid corridors.
+  - Alternatives considered: integer-cell dilation.
+  - Tradeoff accepted: the inflation model is still grid-level and conservative, but it respects the configured corridor width.
+
+### Validation performed
+- Commands run:
+  - `make test`
+  - `make view-plan SEED=123 MAZE_CELL_PX=48`
+- Tests passed/failed:
+  - `make test` passed: 33 tests passed.
+  - `make view-plan SEED=123 MAZE_CELL_PX=48` produced a 61-cell oracle path and opened the SVG artifact.
+- Visual checks/screenshots/log files:
+  - `runs/visual/plan_seed-123_oracle.svg`
+  - `runs/visual/plan_seed-123_oracle.json`
+  - `runs/visual/test_latest.html`
+
+### Problems encountered
+- Problem: obstacle inflation could easily over-block the generated perfect mazes.
+  - Symptom: a simple cell-radius inflation would block one-cell corridors even though `cell_size_m=1.0` and `safety_radius_m=0.45` leaves 0.5 m from corridor center to wall-cell boundary.
+  - Suspected cause: integer grid dilation ignores physical cell dimensions and wall extents.
+  - Fix or mitigation: compute clearance from each free cell center to wall-cell boxes and block only when clearance is less than the configured safety radius.
+  - Remaining risk: this is still a grid approximation; continuous robot body geometry and real gait clearance are future controller/world-validation concerns.
+
+### Result
+The repo now has an oracle/debug planner that finds A* paths on validated generated mazes, converts path cells to MuJoCo world-coordinate waypoints, saves JSON/SVG plan artifacts, and opens the path visualization through `make view-plan`.
+
+### Next actions
+Start Milestone 5 by adding a conservative waypoint follower and robot command interface. Keep oracle waypoints as a debug input, not a final autonomy claim.
+
+## 2026-06-16 - Milestone 5: Waypoint follower and robot command interface
+
+### Goal
+Add conservative waypoint-following control math and high-level velocity-command plumbing without pretending the Unitree G1 can walk yet. Validate the follower in a clearly named point-robot debug mode.
+
+### Changes made
+- Added `nav/controller.py` with `Pose2D`, `VelocityCommand`, `WaypointFollowerConfig`, `ControlOutput`, and `WaypointFollower`.
+- Implemented rotate-before-walk behavior, heading wrapping, waypoint switching, command clipping, goal tolerance, and point-robot integration.
+- Updated `sim/robot_interface.py` to accept high-level velocity commands and report the current `unitree_g1_velocity_placeholder` adapter result.
+- Added `GroundTruthPoseProvider`, restricted to `MODE=oracle` debugging.
+- Added `scripts/follow_waypoints.py` to simulate the waypoint follower with a point-robot proxy over oracle waypoints.
+- Added `make follow`, `make view-follow`, and `make milestone_5`.
+- Added controller and robot-interface tests for heading error, waypoint switching, command clipping, goal reached, point integration, velocity-command acceptance, and oracle-only ground-truth pose access.
+- Updated README and the milestone plan with Milestone 5 commands, artifacts, and limitations.
+
+### Key decisions
+- [LOCOMOTION][DEMO_RISK] Decision: do not claim G1 walking yet.
+  - Why: the current Unitree model exposes joint actuators, not a ready high-level walking velocity API.
+  - Alternatives considered: map velocity directly to joint controls or fake base motion in MuJoCo.
+  - Tradeoff accepted: the controller can be validated now, while real humanoid locomotion remains a separate adapter problem.
+- [CONTROL] Decision: use rotate-before-walk with clipped `vx`, optional `vy`, and `wz`.
+  - Why: this is conservative, explainable, and reduces corner-cutting risk before physical walking exists.
+  - Alternatives considered: pure pursuit or continuous holonomic tracking.
+  - Tradeoff accepted: slower and less smooth motion, but easier to debug.
+- [GROUND_TRUTH_BOUNDARY] Decision: add `GroundTruthPoseProvider` only for `MODE=oracle`.
+  - Why: controller math needs a pose source for debugging, but autonomous mode must later use estimated pose.
+  - Alternatives considered: expose ground truth through the main robot interface.
+  - Tradeoff accepted: extra boundary code now prevents accidental autonomy claims later.
+
+### Validation performed
+- Commands run:
+  - `make test`
+  - `make view-follow SEED=123 MAZE_CELL_PX=48`
+  - `make milestone_5 SEED=123 MAZE_CELL_PX=48`
+- Tests passed/failed:
+  - `make test` passed: 41 tests passed.
+  - `make view-follow SEED=123 MAZE_CELL_PX=48` reached the goal region in point-robot debug mode.
+  - `make milestone_5 SEED=123 MAZE_CELL_PX=48` passed tests and opened the follow SVG artifact.
+- Visual checks/screenshots/log files:
+  - `runs/visual/follow_seed-123_point.svg`
+  - `runs/visual/follow_seed-123_point.json`
+  - `runs/visual/test_latest.html`
+
+### Problems encountered
+- Problem: direct humanoid velocity control is not available yet.
+  - Symptom: `RobotInterface` can read MuJoCo state, but no tested walking adapter maps `vx/vy/wz` to stable G1 joint actuation.
+  - Suspected cause: Unitree G1 Menagerie provides a model and actuators, not a high-level locomotion policy.
+  - Fix or mitigation: implemented explicit high-level command plumbing plus a point-robot debug adapter for controller validation.
+  - Remaining risk: Milestone 6 or a dedicated locomotion milestone must identify or implement a stable G1 walking controller before the robot can physically follow waypoints.
+- Problem: default speed is conservative and generated path length is long.
+  - Symptom: seed 123 point-robot follow took about 262 simulated seconds to reach the goal region.
+  - Suspected cause: `max_forward_speed_mps=0.25` and a 61-waypoint grid path.
+  - Fix or mitigation: keep conservative defaults for safety and record elapsed time in the follow artifact.
+  - Remaining risk: future waypoint smoothing or controller tuning may be needed for demo timing.
+
+### Result
+The repo now has a conservative waypoint follower, high-level velocity command interface, oracle-only ground-truth pose provider, and a visible point-robot waypoint-following artifact. The G1 still does not walk under these commands.
+
+### Next actions
+Start the next milestone by adding sensor/timebase infrastructure, or insert a dedicated locomotion investigation milestone to find a stable G1 velocity-control adapter before attempting physical waypoint following in MuJoCo.
+
+## 2026-06-16 - Milestone 5.1: Visual MuJoCo waypoint follower inspection
+
+### Goal
+Correct Milestone 5 so waypoint following is visible inside MuJoCo, not only as an SVG trajectory. Use a moving proxy body because real G1 locomotion is not implemented.
+
+### Changes made
+- Added `sim/proxy_robot.py` to augment generated MuJoCo worlds with a visible mocap-controlled proxy body and oracle path markers.
+- Added `scripts/sim_follow_waypoints.py` to generate the maze/world/path, move the proxy through MuJoCo using the waypoint follower, save artifacts, and optionally open the live viewer.
+- Added `make sim-follow SEED=...` for live MuJoCo proxy-follow inspection.
+- Added `make view-sim-follow SEED=...` for headless proxy-follow rendering and dashboard inspection.
+- Added tests for proxy XML generation, yaw quaternion conversion, and sim-follow dashboard content.
+- Updated README and the milestone plan with the Milestone 5.1 correction and required artifacts.
+
+### Key decisions
+- [LOCOMOTION][VISIBILITY] Decision: use a MuJoCo mocap proxy body as the debug locomotion backend.
+  - Why: the G1 model does not currently have a tested high-level walking controller, but the waypoint follower must be visible in MuJoCo.
+  - Alternatives considered: continue with SVG-only point robot, fake moving the G1 base, or attempt unvalidated joint control.
+  - Tradeoff accepted: the moving body is a proxy, not the humanoid, but it validates the maze/world/planner/controller/visual pipeline honestly.
+- [GROUND_TRUTH_BOUNDARY] Decision: keep the mode named `proxy_waypoint_follow`.
+  - Why: this prevents confusion with autonomous navigation or real G1 locomotion.
+  - Alternatives considered: call it waypoint following generically.
+  - Tradeoff accepted: more explicit wording, fewer accidental claims.
+- [VISIBILITY] Decision: save a dashboard plus MuJoCo final render and trajectory CSV.
+  - Why: the user needs to inspect what happened even if the live viewer or display stack is unavailable.
+  - Alternatives considered: live viewer only.
+  - Tradeoff accepted: more artifacts, but the run is auditable.
+
+### Validation performed
+- Commands run:
+  - `make test`
+  - `make view-sim-follow SEED=123 MAZE_CELL_PX=48`
+  - `make sim-follow SEED=123 MAZE_CELL_PX=48 SIM_FOLLOW_TIME_SCALE=256 SIM_FOLLOW_FRAME_STRIDE=128 SIM_FOLLOW_HOLD_S=0`
+- Tests passed/failed:
+  - `make test` passed after adding proxy/dashboard tests.
+  - `make view-sim-follow SEED=123 MAZE_CELL_PX=48` completed with `final_status=GOAL_REACHED` and opened the dashboard.
+  - `make sim-follow ...` opened the live MuJoCo viewer path and completed with `final_status=GOAL_REACHED`.
+- Visual checks/screenshots/log files:
+  - `runs/visual/sim_follow_seed-123_world.xml`
+  - `runs/visual/sim_follow_seed-123_topdown.svg`
+  - `runs/visual/sim_follow_seed-123_path.svg`
+  - `runs/visual/sim_follow_seed-123_final.png`
+  - `runs/visual/sim_follow_seed-123_dashboard.html`
+  - `runs/visual/sim_follow_seed-123_summary.json`
+  - `runs/visual/sim_follow_seed-123_trajectory.csv`
+
+### Problems encountered
+- Problem: syncing the live MuJoCo viewer every controller tick was too slow.
+  - Symptom: the first live validation run took too long even though the proxy eventually reached the goal.
+  - Suspected cause: `viewer.sync()` is expensive across roughly 13k controller steps.
+  - Fix or mitigation: added `SIM_FOLLOW_FRAME_STRIDE` so simulation still updates every control tick but viewer syncs at display intervals.
+  - Remaining risk: playback speed is a visualization setting, not physical time.
+- Problem: the live viewer handle can close before completion if the user closes it or the display stack ends the window.
+  - Symptom: an early strict failure reported that the viewer closed before the proxy finished.
+  - Suspected cause: live viewer lifecycle is partly user/environment controlled.
+  - Fix or mitigation: if the viewer launches successfully, the script records `viewer_closed_before_completion` and continues headlessly; if the viewer cannot launch at all, live mode exits nonzero.
+  - Remaining risk: GUI behavior still depends on the machine's display/OpenGL stack.
+
+### Result
+`make sim-follow SEED=123` provides a MuJoCo viewer path with a visible orange proxy moving through the generated maze using the waypoint follower. `make view-sim-follow SEED=123` creates and opens a dashboard with the top-down maze, planned path, final MuJoCo render, trajectory CSV, and summary. G1 walking is still not implemented.
+
+### Next actions
+Investigate a real G1 locomotion adapter or policy before replacing the proxy with humanoid walking. Keep sensor/timebase work separate unless locomotion is deferred intentionally.

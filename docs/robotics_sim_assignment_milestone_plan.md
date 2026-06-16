@@ -722,6 +722,7 @@ Be consistent across:
 
 - `docs/worklog.md` is updated with decisions made, validation performed, problems encountered, current limitations, and next actions for this milestone.
 - `make run SEED=123 DURATION=30` opens a side-by-side dashboard first, then launches the live MuJoCo viewer with G1 inside the generated maze.
+- `make milestone_3 SEED=123 DURATION=30` runs the full Milestone 3 acceptance bundle: tests, top-down world view, side-by-side dashboard, and live MuJoCo viewer.
 - Walls are visible and collidable.
 - Start and goal markers are visible.
 - The robot starts in a free corridor, not inside a wall.
@@ -830,6 +831,8 @@ Avoid diagonal motion initially because humanoid corner cutting can cause collis
 - Planner fails cleanly if no path exists.
 - Waypoints are centered in free cells.
 - Path image is saved.
+- A dedicated command such as `make view-plan SEED=123` opens the oracle path artifact.
+- `make milestone_4 SEED=123` runs tests and opens the oracle path artifact.
 - Tests pass.
 
 ## Codex prompt for this milestone
@@ -917,7 +920,7 @@ pose_provider = EstimatedPoseProvider()        # autonomous/final
 ## Acceptance criteria
 
 - `docs/worklog.md` is updated with decisions made, validation performed, problems encountered, current limitations, and next actions for this milestone.
-- Robot attempts to move toward waypoints.
+- Robot or clearly named point-robot proxy attempts to move toward waypoints.
 - Commands are clipped to safe values.
 - The controller can report statuses:
   - `RUNNING`
@@ -927,6 +930,8 @@ pose_provider = EstimatedPoseProvider()        # autonomous/final
   - `FALL_DETECTED`
   - `TIMEOUT`
 - If G1 locomotion is not yet fully available, the same controller can be tested with a point-robot or simple proxy body.
+- A dedicated command such as `make view-follow SEED=123` opens a visible trajectory artifact.
+- `make milestone_5 SEED=123` runs tests and opens the point-robot waypoint-following artifact.
 
 ## Debugging checklist
 
@@ -960,7 +965,7 @@ Create nav/controller.py with a conservative waypoint-following controller. It s
 
 Update sim/robot_interface.py to accept high-level velocity commands, but keep the implementation compatible with the available Unitree G1 control interface. If direct humanoid velocity control is not available yet, add an adapter or placeholder and allow testing with a simple point-robot mode.
 
-For now, it is acceptable to use a clearly named GroundTruthPoseProvider in MODE=oracle for debugging. Keep this separated so autonomous mode can later use estimated pose. Add tests for controller math: heading error, waypoint switching, command clipping, and goal reached.
+For now, it is acceptable to use a clearly named GroundTruthPoseProvider in MODE=oracle for debugging ONLY. Keep this separated so autonomous mode can later use estimated pose. Add tests for controller math: heading error, waypoint switching, command clipping, and goal reached.
 
 Also update docs/worklog.md for this milestone. Include what changed, why the main design choices were made, commands/tests used for validation, problems encountered, current limitations, and next actions. Do not skip the worklog even if the code changes are small.
 ```
@@ -968,6 +973,33 @@ Also update docs/worklog.md for this milestone. Include what changed, why the ma
 ## Stop here until
 
 You can run one seed in oracle mode and see the robot or proxy agent follow waypoints toward the goal.
+
+---
+
+# Milestone 5.1 — Visual MuJoCo waypoint follower inspection
+
+## Goal
+
+Make the waypoint follower visible inside MuJoCo. If real Unitree G1 locomotion is not implemented, use a clearly labeled moving proxy body in the generated MuJoCo maze while keeping the G1 standing as a reference model.
+
+## Acceptance criteria
+
+- `make sim-follow SEED=123` opens the MuJoCo viewer and shows the generated maze plus a moving proxy body following oracle waypoints.
+- `make view-sim-follow SEED=123` runs the same proxy simulation headlessly and opens a dashboard.
+- Required artifacts are saved under `runs/visual/`:
+  - `sim_follow_seed-123_world.xml`
+  - `sim_follow_seed-123_topdown.svg`
+  - `sim_follow_seed-123_path.svg`
+  - `sim_follow_seed-123_final.png`
+  - `sim_follow_seed-123_dashboard.html`
+  - `sim_follow_seed-123_summary.json`
+  - `sim_follow_seed-123_trajectory.csv`
+- The dashboard states `mode=proxy_waypoint_follow`, whether real G1 locomotion is implemented, final status, waypoints reached, duration, rerun commands, and artifact paths.
+- Do not claim G1 walking unless a real G1 locomotion adapter or policy is implemented.
+
+## Stop here until
+
+You can run one command and watch a visible body move through the generated MuJoCo maze using the waypoint follower.
 
 ---
 
