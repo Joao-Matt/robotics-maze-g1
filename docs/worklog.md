@@ -740,3 +740,68 @@ Add a visual oracle-following runner that starts turns before corners, commands 
   - The short run timed out by duration, as expected, and reported no wall contacts.
   - Seed 5 reached a known right turn; the event log recorded `turn_direction=right` and the command CSV showed `vx=0.4`, `yaw_rate=-0.8` during `ARC_TURN`.
   - The seed 5 right-turn run reached `POST_TURN_REALIGN`, timed out only because of the 18 second cap, and reported `steps_with_wall_contacts=0`.
+
+## 2026-06-17 - Docker development environment for ROS 2 Humble
+
+### Goal
+Create a portable Docker development environment that keeps ROS 2 Humble, Nav2, SLAM, RViz, and MuJoCo system dependencies inside the image instead of requiring ROS on the host.
+
+### Changes made
+- Added `docker/Dockerfile` based on the multi-architecture official ROS Humble Jammy base image, with desktop/navigation packages installed explicitly.
+- Added Docker runtime scripts:
+  - `docker/entrypoint.sh`
+  - `docker/run.sh`
+  - `docker/run_gui.sh`
+  - `docker/build_multiarch.sh`
+- Added `.dockerignore` to keep generated artifacts and caches out of Docker build context while preserving `third_party/` and `assets/` model/policy assets.
+- Added `scripts/check_ros_docker_env.sh` to verify ROS 2 Humble, Nav2, SLAM, depth conversion, localization, RViz, and workspace availability inside Docker.
+- Added Make targets:
+  - `make docker-build`
+  - `make docker-run`
+  - `make docker-run-gui`
+  - `make docker-test`
+  - `make docker-smoke`
+  - `make docker-check-ros`
+  - `make docker-milestone_4`
+  - `make docker-build-multiarch`
+- Added README Docker quick-start documentation.
+- Added lightweight tests for Docker support files, executable bits, `.dockerignore`, README docs, and Make targets.
+- Added `VENV_PYTHON` Makefile support so normal host commands still use `.venv/bin/python`, while Docker wrappers can export `VENV=/usr` and run the same Make targets with `/usr/bin/python3`.
+- Pinned `pytest>=8.0,<9.0` because ROS 2 Humble's `launch_testing` pytest plugin is not compatible with pytest 9.
+
+### Key decisions
+- [REPRODUCIBILITY][SENSORS] Decision: use `ros:humble-ros-base-jammy` plus explicit ROS desktop/navigation packages.
+  - Why: `osrf/ros:humble-desktop` failed on the ARM64 Docker host with `exec /bin/bash: exec format error`; manifest inspection showed it was not multi-architecture here, while `ros:humble-ros-base-jammy` supports `linux/amd64` and `linux/arm64/v8`.
+  - Alternatives considered: native host ROS install, plain Ubuntu base image, or forcing amd64 emulation.
+  - Tradeoff accepted: slightly more explicit apt package list, but the image can build on x86 and ARM/Jetson-class machines.
+- [REPRODUCIBILITY][TRADEOFF] Decision: bind-mount the repo into `/workspace` for normal development.
+  - Why: source edits should appear inside Docker immediately without rebuilding.
+  - Tradeoff accepted: image copies the repo for reproducible builds, but runtime development uses the host checkout.
+- [DEMO_RISK] Decision: split headless and GUI run scripts.
+  - Why: CI/headless development should not depend on X11, while RViz/MuJoCo viewer work still needs a GUI path.
+
+### Validation performed
+- Commands run:
+  - `make docker-build`
+  - `make docker-check-ros`
+  - `make docker-smoke`
+  - `make docker-test`
+  - `make test`
+- Result:
+  - First build attempt using `osrf/ros:humble-desktop` failed on this ARM64 Docker host with `exec /bin/bash: exec format error`.
+  - Patched the Dockerfile to use the multi-architecture official ROS Humble Jammy base image and install desktop/navigation packages explicitly.
+  - Rebuilt image successfully as `robotics-maze-g1:humble`.
+  - `make docker-check-ros` passed inside Docker and verified ROS 2 Humble, `ros2`, `rviz2`, `colcon`, Nav2, SLAM Toolbox, depth image conversion, robot localization, image transport, CV bridge, vision messages, and `/workspace`.
+  - `make docker-smoke` passed inside Docker and wrote `runs/visual/smoke_latest.html`.
+  - `make docker-test` passed inside Docker: 63 tests passed with Python 3.10.12 and pytest 8.4.2.
+  - `make test` passed on the host: 63 tests passed with the repo `.venv`.
+  - Intermediate Docker test run failed with pytest 9/plugin incompatibility, which is why `requirements.txt` now pins pytest below 9.
+- Tests/checks added:
+  - `tests/test_docker_support.py`
+- Current limitations:
+  - GPU acceleration is not part of the base image.
+  - GUI support uses Linux X11 forwarding and depends on the host display/session.
+  - Multi-architecture manifests normally require `PUSH=1` and a registry image.
+
+### Next actions
+If a desktop display is available, run `make docker-run-gui` and test `rviz2` or `make milestone_4 SEED=123` from inside the container.

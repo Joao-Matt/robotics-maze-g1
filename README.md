@@ -45,9 +45,67 @@ env \
 
 On this Ubuntu 20.04 environment, Python 3.11.15 was built against a user-local OpenSSL at `/home/gary/.local/openssl` because interactive `sudo apt` was not available for installing `libssl-dev`. The Makefile sets `LD_LIBRARY_PATH` for repo commands so the venv can use that OpenSSL runtime.
 
+## Docker Quick Start
+
+The Docker environment is the portable development path for ROS work. The host does not need ROS installed. The image contains Ubuntu 22.04, ROS 2 Humble, Nav2, SLAM/navigation packages, RViz/rqt tools, MuJoCo rendering libraries, ffmpeg, Python, and this repo's Python requirements. The Dockerfile defaults to the multi-architecture official `ros:humble-ros-base-jammy` image and installs desktop/navigation packages explicitly; `osrf/ros:humble-desktop` was not used as the default because it is not multi-architecture in this environment.
+
+```bash
+make docker-build
+make docker-run
+make docker-run-gui
+make docker-test
+make docker-smoke
+make docker-check-ros
+```
+
+`make docker-run` starts a terminal/headless development shell. `make docker-run-gui` starts a GUI-capable shell for RViz, MuJoCo viewer runs, and dashboard opening when the Linux host has X11 display support. Inside either container, the repo is bind-mounted at `/workspace`, so normal host edits appear immediately inside Docker. Rebuild the image only when dependencies change: `docker/Dockerfile`, `requirements.txt`, apt packages, ROS packages, or system libraries.
+
+The Docker run scripts export `VENV=/usr`, so existing Make targets use the Python packages installed in the image instead of requiring a repo-local `.venv` inside the container. The normal host workflow still defaults to `.venv`.
+
+Examples inside the container:
+
+```bash
+echo $ROS_DISTRO
+ros2 --help
+scripts/check_ros_docker_env.sh
+make test
+make smoke
+make view-g1-oracle-follow SEED=123 ORACLE_FOLLOW_DURATION=5
+```
+
+GUI examples from a GUI-capable shell:
+
+```bash
+rviz2
+make milestone_4 SEED=123
+```
+
+The run scripts mount the current repo into `/workspace`, use host networking, set `ROS_DOMAIN_ID`, and run as the host UID/GID where practical so generated files under `runs/`, `reports/`, `ros_ws/`, dashboards, videos, logs, and KPI outputs persist on the host without becoming root-owned. If a file does end up owned by root after manual Docker use, fix it from the host with:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" runs reports ros_ws
+```
+
+Multi-architecture build support is available for x86 laptops and ARM/Jetson targets:
+
+```bash
+make docker-build-multiarch
+PLATFORMS=linux/amd64 docker/build_multiarch.sh
+PUSH=1 IMAGE_NAME=ghcr.io/<user>/robotics-maze-g1:humble docker/build_multiarch.sh
+```
+
+True multi-platform manifests normally require `PUSH=1` and a registry image name. Local `--load` works only for a single platform. GPU acceleration is not part of this base image; this is a portable CPU/GUI-capable development environment first, and GPU support can be added later if needed.
+
+`requirements.txt` pins pytest below 9 because ROS 2 Humble's `launch_testing` pytest plugin is not compatible with pytest 9.
+
 ## Milestone Commands
 
 ```bash
+make docker-build
+make docker-run
+make docker-run-gui
+make docker-test
+make docker-check-ros
 make smoke
 make view-smoke
 make test
