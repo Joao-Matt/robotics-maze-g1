@@ -367,3 +367,376 @@ Make `make run` show the generated maze world in realtime, and make the first vi
 
 ### Next actions
 Milestone 4 should add oracle path planning and overlay the planned path in both the 2D dashboard and MuJoCo world.
+
+## 2026-06-16 - Sidequest: G1 locomotion policy sandbox
+
+### Goal
+Create a flat-ground visual Unitree G1 locomotion policy sandbox for teleop-driven walking-policy candidates, separate from the maze navigation milestones.
+
+### Changes made
+- Added `sim/locomotion_policy_adapter.py` with `placeholder`, `onnx`, and `external_python` adapter modes.
+- Added `sim/locomotion_sandbox.py` with teleop command clipping, key mapping, command timeout, fall status checks, CSV logging, frame recording paths, dashboard writing, and final rendering helpers.
+- Added `scripts/g1_loco_sandbox.py` as the live/headless sandbox entry point.
+- Added `make g1-loco-sandbox POLICY=...` for the live MuJoCo viewer and `make g1-loco-view POLICY=...` for headless artifact/dashboard generation.
+- Added alias targets `make locomotion-sandbox` and `make view-locomotion-sandbox`.
+- Added `locomotion_sandbox` settings to `configs/default.yaml`.
+- Added non-visual tests for command clipping, key mapping, command timeout, placeholder compatibility, report writing, dashboard references, and recording path creation.
+- Updated README with command names, controls, policy modes, and artifact paths.
+
+### Key decisions
+- [SCOPE] Decision: keep the sandbox on the existing flat G1 Menagerie `scene.xml`.
+  - Why: policy bring-up needs a safe flat world with floor, lighting, camera defaults, and G1, not the generated maze world.
+  - Tradeoff accepted: maze start placement, planner state, and waypoint following stay out of this branch.
+- [POLICY_BOUNDARY] Decision: placeholder mode holds the stand keyframe control target and marks `real_locomotion=false`.
+  - Why: it validates viewer, teleop, logging, recording, and artifacts without pretending the robot can walk.
+  - Tradeoff accepted: placeholder teleop changes desired commands only; it does not produce gait motion.
+- [TELEOP] Decision: reserve `S` and `T` for stop-recording and use `Z` as fallback backward.
+  - Why: this removes the ambiguous `S` conflict while keeping a keyboard-only fallback.
+- [ONNX_SAFETY] Decision: ONNX policies require explicit metadata and strict dimension/name checks.
+  - Why: applying a humanoid policy with guessed joint order or action scaling is unsafe and misleading.
+  - Tradeoff accepted: many raw ONNX files will fail compatibility until a policy-specific metadata file is supplied.
+
+### Validation performed
+- Commands run:
+  - `.venv/bin/python -m pytest tests/test_locomotion_sandbox.py`
+  - `make g1-loco-view POLICY=placeholder G1_LOCO_DURATION=0.2`
+  - `make g1-loco-sandbox POLICY=placeholder G1_LOCO_DURATION=1`
+  - `make test`
+- Tests passed/failed:
+  - Targeted sandbox tests passed: 7 passed.
+  - Full project tests passed: 33 passed.
+  - The placeholder compatibility report marks `real_locomotion=false`.
+  - Recording path creation and R/S key request handling are covered by non-visual tests; no real live recording was captured during this pass.
+- Visual checks/screenshots/log files:
+  - Live MuJoCo viewer opened for `make g1-loco-sandbox POLICY=placeholder G1_LOCO_DURATION=1`.
+  - Latest artifacts created:
+    - `runs/visual/g1_loco_latest_dashboard.html`
+    - `runs/visual/g1_loco_latest_summary.json`
+    - `runs/visual/g1_loco_latest_commands.csv`
+    - `runs/visual/g1_loco_latest_state.csv`
+    - `runs/visual/g1_loco_latest_final_render.png`
+    - `runs/visual/g1_loco_latest_policy_compatibility.json`
+  - Final live summary reported `viewer_opened=true`, `final_status=standing`, `fallen=false`, and `recording_used=false`.
+
+### Problems encountered
+- Problem: no real walking policy is included with the Unitree G1 MuJoCo model.
+  - Fix or mitigation: added a clear placeholder mode and strict compatibility reports for future policy candidates.
+  - Remaining risk: locomotion backend integration still depends on finding or adapting a real G1 walking policy.
+
+### Result
+The branch now has a dedicated locomotion-policy sandbox path that can validate policy loading, teleop commands, status display, logs, dashboards, final renders, and optional recording frames without modifying the maze pipeline.
+
+### Next actions
+Manually exercise live keypress teleop/recording in a longer viewer session, then test a real ONNX candidate with a metadata file that declares observation/action dimensions, actuator names, control rate, and action scaling.
+
+## 2026-06-16 - Sidequest update: Lucky Robots walker policy integration
+
+### Goal
+Use the pretrained G1 walking policy from `luckyrobots/g1-manipulation-challenge` as the first real locomotion backend in the visual sandbox.
+
+### Changes made
+- Added `POLICY=lucky_walker` as a Lucky-specific adapter mode.
+- Added `make fetch-lucky-g1-policy` to clone `https://github.com/luckyrobots/g1-manipulation-challenge.git` into ignored `third_party/g1-manipulation-challenge/`.
+- Added `onnxruntime` to `requirements.txt` for real ONNX policy inference.
+- Added `.gitignore` coverage for `third_party/` so upstream policy weights are not vendored into this repo.
+- The Lucky adapter generates `third_party/g1-manipulation-challenge/flat_scene_locomotion_sandbox.xml` from the upstream G1 model, then runs only the 29-actuator body walker on flat ground.
+- Added tests for the Lucky adapter alias, flat wrapper generation, and actionable missing-asset reports.
+- Updated README with the Lucky walker fetch/run commands.
+
+### Key decisions
+- [POLICY_ASSETS] Decision: fetch the Lucky repo locally instead of committing `walker.onnx` and mesh assets.
+  - Why: the upstream repo contains policy weights and assets but no obvious license file in the fetched checkout.
+  - Tradeoff accepted: users must run `make fetch-lucky-g1-policy` before `POLICY=lucky_walker`.
+- [MODEL_COMPATIBILITY] Decision: run the Lucky walker with its bundled G1 model on a generated flat scene.
+  - Why: the policy was trained with a 0.005 s timestep, specific actuator gains, armature values, default pose, and action scales from `model_config.json`.
+  - Tradeoff accepted: this sandbox backend uses the Lucky G1 XML rather than the Menagerie G1 XML, while still keeping the world flat and separate from maze navigation.
+- [CONTROL_BOUNDARY] Decision: the Lucky walker adapter controls only the first 29 named body actuators.
+  - Why: Lucky's full model includes additional hand actuators, but the walker output is 29D.
+  - Tradeoff accepted: hands are present in the Lucky model but not controlled by the walking adapter.
+
+### Validation performed
+- Commands run:
+  - `LD_LIBRARY_PATH="/home/gary/.local/openssl/lib:$LD_LIBRARY_PATH" .venv/bin/python -m pip install 'onnxruntime>=1.17'`
+  - `make fetch-lucky-g1-policy`
+  - `make g1-loco-view POLICY=lucky_walker G1_LOCO_DURATION=0.2`
+  - scripted 3 s rollout with `vx=0.25`
+  - `make g1-loco-sandbox POLICY=lucky_walker G1_LOCO_DURATION=1`
+- Tests passed/failed:
+  - Lucky adapter tests passed: 3 passed.
+  - Sandbox tests passed: 10 passed across Lucky and generic sandbox tests.
+- Visual checks/screenshots/log files:
+  - Live MuJoCo viewer opened for `POLICY=lucky_walker`.
+  - Final live summary reported `viewer_opened=true`, `real_locomotion=true`, `final_status=standing`, `fallen=false`.
+  - Scripted forward command moved the base about 0.057 m over 3 s and stayed upright.
+  - Latest artifacts updated under `runs/visual/g1_loco_latest_*`.
+
+### Problems encountered
+- Problem: the initial flat-scene wrapper under `runs/visual/` caused MuJoCo mesh path resolution failures.
+  - Symptom: MuJoCo looked for OBJ meshes beside the Lucky repo root instead of under `assets/`.
+  - Fix or mitigation: generate the flat wrapper inside the Lucky repo root so its original `meshdir="assets"` resolves as upstream intended.
+- Problem: `pip install onnxruntime` initially failed because the venv needs the local OpenSSL library path.
+  - Fix or mitigation: install with `LD_LIBRARY_PATH="/home/gary/.local/openssl/lib:$LD_LIBRARY_PATH"`, matching the Makefile command environment.
+
+### Result
+The sandbox now has a real walking policy path. `make g1-loco-sandbox POLICY=lucky_walker` opens a live viewer with the Lucky walker loaded, and teleop velocity commands are converted into G1 joint targets through the upstream 99D observation to 29D action pipeline.
+
+### Next actions
+Run a longer manual session with `POLICY=lucky_walker`, press/hold `W` or the up arrow to command forward velocity, test yaw keys, and record a short walking clip with `R` then `S` or `T`.
+
+## 2026-06-16 - Sidequest update: Lucky walker teleop tuning
+
+### Goal
+Make live teleop commands large and persistent enough to produce visible walking with `POLICY=lucky_walker`.
+
+### Changes made
+- Added `command_step_fraction` to `locomotion_sandbox` config.
+- Added Lucky-specific teleop defaults in `scripts/g1_loco_sandbox.py`.
+- For `POLICY=lucky_walker`, command limits now rise to at least:
+  - `max_forward_speed_mps=1.0`
+  - `max_lateral_speed_mps=0.6`
+  - `max_yaw_rate_radps=1.0`
+  - `command_timeout_s=2.0`
+  - `command_step_fraction=0.2`
+- Updated README to tell users to tap `W` or up arrow several times to ramp visible speed.
+
+### Problem encountered
+- Problem: the viewer received keys, but each press only produced `vx=0.05` and the command timed out after `0.5s`.
+  - Symptom: terminal showed brief `walking` status, but robot movement was not visually obvious.
+  - Fix or mitigation: Lucky walker mode now uses upstream-sized velocity increments (`0.2` per tap) and a longer safety timeout (`2s`).
+
+### Validation performed
+- Commands run:
+  - `.venv/bin/python -m pytest tests/test_locomotion_sandbox.py tests/test_lucky_walker_adapter.py`
+  - `make test`
+- Tests passed/failed:
+  - Focused sandbox tests passed: 10 passed.
+  - Full project tests passed: 36 passed.
+
+### Result
+Live Lucky walker teleop should now show visible motion after a few `W` or up-arrow taps, while `Space`/`X` still zeroes the command immediately and the timeout still returns to zero if input stops.
+
+## 2026-06-16 - Sidequest update: Unitree RL Gym policy integration
+
+### Goal
+Add a walking-policy backend from the official `unitreerobotics/unitree_rl_gym` repo, prioritizing the regular Menagerie G1 model while keeping an official-native comparison path.
+
+### Changes made
+- Added `make fetch-unitree-rl-gym-policy` to clone `https://github.com/unitreerobotics/unitree_rl_gym.git` into ignored `third_party/unitree_rl_gym/`.
+- Added `make install-torch-cpu` to install `torch==2.12.0+cpu` from the PyTorch CPU wheel index.
+- Added `POLICY=unitree_rl_gym_g1`, an experimental adapter that loads Unitree's `deploy/pre_train/g1/motion.pt` and maps its 12 leg actions onto the regular Menagerie G1 model.
+- Added `POLICY=unitree_rl_gym_native`, a comparison adapter that loads Unitree's own 12-DoF G1 Mujoco XML.
+- Added Torch `LD_PRELOAD` handling for `libgomp.so.1` and `libc10.so` in the locomotion Make targets to avoid static TLS load errors on this platform.
+- Added tests for Unitree RL Gym adapter routing and missing-asset reporting.
+- Updated README with the Unitree commands and caveats.
+
+### Key decisions
+- [POLICY_SOURCE] Decision: keep Unitree RL Gym as an ignored third-party checkout.
+  - Why: it is BSD-3 licensed, but keeping fetched policy/model assets out of this repo avoids unrelated vendoring churn.
+- [MODEL_COMPATIBILITY] Decision: expose both regular-model and native-model modes.
+  - Why: the user's main goal is the regular Menagerie G1, but Unitree's policy was trained/deployed with a 12-DoF torque XML.
+  - Tradeoff accepted: `unitree_rl_gym_g1` is explicitly experimental; `unitree_rl_gym_native` is the closer official reference.
+- [TORCH_INSTALL] Decision: do not add generic `torch` to `requirements.txt`.
+  - Why: plain PyPI Torch attempted to install a large CUDA-enabled dependency set on this aarch64 system.
+  - Fix or mitigation: add `make install-torch-cpu` with the CPU wheel index.
+
+### Validation performed
+- Commands run:
+  - `make fetch-unitree-rl-gym-policy`
+  - `make install-torch-cpu`
+  - `make g1-loco-view POLICY=unitree_rl_gym_g1 G1_LOCO_DURATION=0.2`
+  - `make g1-loco-view POLICY=unitree_rl_gym_native G1_LOCO_DURATION=0.2`
+  - scripted 3 s forward rollouts with `vx=0.2` and `vx=0.5`
+  - `make g1-loco-sandbox POLICY=unitree_rl_gym_g1 G1_LOCO_DURATION=1`
+  - focused adapter/sandbox pytest suite
+- Tests passed/failed:
+  - Focused adapter/sandbox tests passed: 13 passed.
+- Visual checks/screenshots/log files:
+  - Live MuJoCo viewer opened for `POLICY=unitree_rl_gym_g1`.
+  - Latest artifacts updated under `runs/visual/g1_loco_latest_*`.
+  - Scripted regular Menagerie bridge rollouts stayed upright for 3 s:
+    - `vx=0.2`: delta about `[0.55, 0.47, 0.02]`
+    - `vx=0.5`: delta about `[0.85, -0.02, 0.02]`
+  - Scripted native Unitree XML rollouts stayed upright for 3 s:
+    - `vx=0.2`: delta about `[0.54, -0.07, -0.01]`
+    - `vx=0.5`: delta about `[1.27, -0.07, -0.02]`
+
+### Problems encountered
+- Problem: installing `torch>=2.2` from the default PyPI index began pulling a large CUDA-enabled wheel stack.
+  - Fix or mitigation: cancelled it and installed `torch==2.12.0+cpu` from `https://download.pytorch.org/whl/cpu`.
+- Problem: Torch initially failed to load after MuJoCo with static TLS errors for `libgomp.so.1` and `libc10.so`.
+  - Fix or mitigation: preload those Torch shared libraries in the g1-loco Make targets when they are present.
+- Problem: the first regular-model scripted rollout fell when PD control was only refreshed at the outer 50 Hz loop.
+  - Fix or mitigation: mark Unitree adapters as requiring substep control so PD targets/torques update every MuJoCo step while policy actions update every 10 substeps.
+
+### Result
+The sandbox now supports an official Unitree RL Gym policy path. Use `POLICY=unitree_rl_gym_g1` for the regular Menagerie G1 bridge and `POLICY=unitree_rl_gym_native` for Unitree's own 12-DoF XML reference.
+
+### Next actions
+Run a longer manual viewer test with `POLICY=unitree_rl_gym_g1`, compare it against `POLICY=unitree_rl_gym_native`, and decide whether the regular-model bridge is stable enough for future maze locomotion or whether maze integration should target a Unitree-derived G1 XML.
+
+## 2026-06-17 - Milestone 4: Lucky G1 oracle walking
+
+### Goal
+Make Lucky Robot's G1 model and `walker.onnx` policy the default branch robot stack, then replace the orange waypoint proxy with a physically simulated Lucky G1 walker in explicit oracle mode.
+
+### Changes made
+- Switched `configs/default.yaml` to default to `third_party/g1-manipulation-challenge/scene.xml` and `g1.xml`, while keeping the Menagerie paths as legacy fallback references.
+- Added `nav/planner.py` for oracle BFS planning, obstacle-inflation handling, waypoint conversion, and path simplification.
+- Added `nav/controller.py` with a conservative rotate-then-walk waypoint follower that outputs `VelocityCommand`.
+- Extended the Lucky walker adapter with `reset_at_pose(x, y, yaw)` so maze runs can initialize the policy at the maze start instead of the flat-sandbox origin.
+- Added `scripts/run_milestone_4.py` to build a Lucky-based maze world, add oracle path markers, load `walker.onnx`, follow waypoints with MuJoCo ground-truth pose, and write trajectory/final-render/dashboard artifacts.
+- Added `make milestone_4` for live viewer runs and `make view-milestone_4` for headless dashboard runs.
+- Made default world/run/test targets fetch or refresh the ignored Lucky checkout before loading the default model.
+
+### Key decisions
+- [LOCOMOTION][MODEL_COMPATIBILITY] Decision: Lucky is the default runtime model/policy pair for this branch.
+  - Why: the Lucky walker policy and Lucky XML match each other and produce visible walking, unlike the experimental Unitree policy bridge on Menagerie.
+  - Tradeoff accepted: the branch default model changes, but Menagerie remains available as an explicit legacy path.
+- [GROUND_TRUTH_BOUNDARY][PLANNING] Decision: Milestone 4 uses oracle grid planning and MuJoCo ground-truth base pose.
+  - Why: this isolates locomotion/path-following before ROS 2, Nav2, SLAM, and sensor estimation are introduced.
+  - Tradeoff accepted: this is not sensor-based autonomy and must be labeled oracle/debug.
+- [DEMO_RISK] Decision: do not silently fall back to a proxy.
+  - Why: the milestone should prove whether the Lucky model is actually walking.
+  - Tradeoff accepted: long runs may honestly report `FALL_DETECTED`, `STUCK`, or `TIMEOUT` instead of always showing a successful animation.
+
+### Validation performed
+- Commands run:
+  - `make view-milestone_4 SEED=123 MILESTONE_4_DURATION=1`
+  - `rg -n "proxy_waypoint_body|mocap=\"true\"|orange" runs/visual/milestone_4_seed-123_world.xml runs/visual/milestone_4_seed-123_summary.json || true`
+  - `make test`
+- Tests passed/failed:
+  - Full project tests passed: 48 passed.
+- Visual/artifact checks:
+  - `make view-milestone_4 SEED=123 MILESTONE_4_DURATION=1` wrote the milestone dashboard, world XML, path SVG, trajectory CSV, final render, and compatibility report.
+  - The short run moved the Lucky G1 from the maze start, reached waypoint index 1/2 during the first second, stayed upright, and reported `final_status=RUNNING`.
+  - The generated Milestone 4 world XML does not contain `proxy_waypoint_body`, `mocap="true"`, or `orange`.
+
+### Current limitations
+- The short validation proves integration and initial walking, not full maze completion.
+- The controller is intentionally conservative and may time out or report stuck/fallen on longer seeds if the walker cannot negotiate turns/corridors reliably.
+- Oracle mode still uses generated-grid planning and MuJoCo truth pose; ROS 2/Nav2/SLAM integration remains future work.
+
+### Next actions
+Run a longer live `make milestone_4 SEED=123` inspection, tune waypoint tolerances and speed/yaw limits if needed, then start the sensor/timebase milestone for ROS-facing navigation work.
+
+## 2026-06-17 - Milestone 4 fix: visible Lucky oracle walking speed
+
+### Goal
+Fix the first Milestone 4 live/headless runs where the controller sent commands but the Lucky G1 barely moved and then reported `STUCK`.
+
+### Problem encountered
+- Problem: `make milestone_4 SEED=123` and `make view-milestone_4 SEED=123` appeared not to move the robot.
+  - Evidence: `runs/visual/milestone_4_seed-123_trajectory.csv` showed `vx=0.25`, but the base only moved about 5.5 cm before `final_status=STUCK`.
+  - Suspected cause: the oracle controller reused the older conservative Menagerie/proxy speed. Lucky's policy needs a larger command; the upstream controller allows linear commands up to `2.0`.
+
+### Fix
+- Increased `oracle.forward_speed_mps` from `0.25` to `0.8`.
+- Added a config regression test to keep the default Lucky oracle speed in the visible-walking range.
+
+### Validation performed
+- Commands run:
+  - Diagnostic Lucky command sweep at the maze start with `vx` values from `0.25` to `1.5`.
+  - `make view-milestone_4 SEED=123 MILESTONE_4_DURATION=20`
+  - `make view-milestone_4 SEED=123 MILESTONE_4_DURATION=60`
+  - `make test`
+- Result:
+  - `vx=0.25` moved only about `0.057 m` in 4 simulated seconds.
+  - `vx=0.8` moved about `2.37 m` in 4 simulated seconds while staying upright.
+  - The 20-second Milestone 4 run advanced to waypoint 5, stayed upright, and ended with `final_status=RUNNING`.
+  - A later 30-second run showed a false `STUCK` at waypoint index 4 because the stuck timer counted time spent intentionally rotating in place.
+  - Fixed the stuck detector to reset its timer while `vx=0`; after that, the 60-second run reached waypoint index 5/6 and kept `final_status=RUNNING`.
+
+## 2026-06-17 - Milestone 4 collision diagnostics and wide maze option
+
+### Goal
+Check whether the Lucky G1 is getting close enough to maze walls to collide during oracle walking, and provide an easier/wider maze option for locomotion debugging.
+
+### Changes made
+- Added MuJoCo contact diagnostics to `scripts/run_milestone_4.py`.
+- Milestone 4 trajectory CSV now includes:
+  - `contact_count`
+  - `wall_contact_count`
+  - `wall_contact_pairs`
+- Milestone 4 summary JSON now includes `contact_summary` with first/last wall contact time, wall/robot geom pairs, max contact counts, and sampled steps with wall contacts.
+- Added `configs/lucky_wide_maze.yaml`, which keeps the same 15x15 maze topology but increases `maze.cell_size_m` from `1.0` to `1.5`.
+- Added `make milestone_4-wide` and `make view-milestone_4-wide`; wide artifacts use the `milestone_4_wide_seed-*` prefix so default and wide runs can be compared side by side.
+
+### Findings
+- Default/narrow run:
+  - Command: `make view-milestone_4 SEED=123 MILESTONE_4_DURATION=35`
+  - Result: `steps_with_wall_contacts=6`
+  - First wall contact: `t=26.92s`
+  - Contact pair: `maze_wall_0_3<->geom_221:left_hand_index_1_link`
+- Wide run:
+  - Command: `make view-milestone_4-wide SEED=123 MILESTONE_4_DURATION=20`
+  - Result: `steps_with_wall_contacts=0`
+
+### Conclusion
+The user hypothesis was correct for the default 1 m corridor maze: the humanoid can brush maze walls, specifically with an arm/hand link while navigating a tight turn near the top row. The wide 1.5 m corridor config avoids wall contact in the checked run and is a better default for locomotion tuning.
+
+## 2026-06-17 - Milestone 4 arc turns and corridor-width command control
+
+### Goal
+Fix the Lucky walker getting stuck on pure rotate-in-place turns, and expose corridor width as a per-command tuning knob.
+
+### Changes made
+- Changed the oracle waypoint follower from stop-and-turn to arc-turn behavior.
+  - When heading error is large, the controller now commands a forward crawl plus yaw instead of `vx=0`.
+  - Added `oracle.arc_turn_speed_mps`, defaulting to `0.4`.
+- Changed the default maze corridor width from `1.0 m` to `1.6 m`.
+- Changed the wide maze config and wide Make targets to use `2.0 m`.
+- Added `CORRIDOR_WIDTH_M=1.0..2.0` for `make milestone_4` and `make view-milestone_4`.
+  - Example narrow run: `make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=1.0 MILESTONE_4_LABEL=narrow`
+  - Example default run: `make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=1.6`
+  - Example wide run: `make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=2.0 MILESTONE_4_LABEL=wide`
+- Updated stuck detection to track route progress by waypoint index/current-waypoint distance instead of straight-line distance to the final goal.
+
+### Why
+Diagnostic sweeps showed the Lucky policy barely changes yaw with a pure turn command, especially on the right-turn segment after the second turn. The same policy yaws much more effectively when given a small forward velocity during the turn, so the controller now follows that policy preference instead of fighting it.
+
+Straight-line goal distance is also a poor stuck signal inside a maze: a valid route can temporarily move away from the final goal. The detector now measures local waypoint-route progress.
+
+## 2026-06-17 - Turn-aware G1 oracle follower
+
+### Goal
+Add a visual oracle-following runner that starts turns before corners, commands arc turns with forward velocity, and logs controller state/recovery behavior for the Lucky G1 walking policy.
+
+### Changes made
+- Added heading-aware A* support to the oracle planner with configurable turn penalty.
+- Added a turn-aware path postprocessor and controller state machine:
+  - `FOLLOW_STRAIGHT`
+  - `PRE_TURN_SLOWDOWN`
+  - `ARC_TURN`
+  - `POST_TURN_REALIGN`
+  - `RECOVERY`
+  - `GOAL_REACHED`
+  - `FAILED`
+- Added conservative stuck recovery with bounded attempts.
+- Added `scripts/run_g1_oracle_follow.py`.
+- Added Make targets:
+  - `make g1-oracle-follow SEED=123`
+  - `make view-g1-oracle-follow SEED=123`
+- Added required artifacts:
+  - dashboard HTML
+  - final MuJoCo render
+  - topdown path overlay SVG
+  - trajectory CSV
+  - commands CSV
+  - events JSONL
+  - summary JSON
+- Added oracle config defaults for turn start distance, arc turn speed/yaw, post-turn heading tolerance, stuck detection, recovery bounds, and turn penalty.
+
+### Validation performed
+- Commands run:
+  - `.venv/bin/python -m py_compile nav/planner.py nav/oracle_follow.py scripts/run_g1_oracle_follow.py`
+  - `.venv/bin/python -m pytest tests/test_oracle_follow.py tests/test_planner.py tests/test_config.py`
+  - `make view-g1-oracle-follow SEED=123 ORACLE_FOLLOW_DURATION=5 ORACLE_FOLLOW_LABEL=smoke`
+  - `make test`
+  - `make view-g1-oracle-follow SEED=5 ORACLE_FOLLOW_DURATION=18 CORRIDOR_WIDTH_M=2.0 ORACLE_FOLLOW_LABEL=rightturn`
+- Results:
+  - Full project tests passed: 58 passed.
+  - The smoke run wrote all required artifacts under `runs/visual/g1_oracle_follow_smoke_seed-123_*`.
+  - The event log showed `FOLLOW_STRAIGHT`, `PRE_TURN_SLOWDOWN`, and `ARC_TURN`, including a logged turn-start event.
+  - The short run timed out by duration, as expected, and reported no wall contacts.
+  - Seed 5 reached a known right turn; the event log recorded `turn_direction=right` and the command CSV showed `vx=0.4`, `yaw_rate=-0.8` during `ARC_TURN`.
+  - The seed 5 right-turn run reached `POST_TURN_REALIGN`, timed out only because of the 18 second cap, and reported `steps_with_wall_contacts=0`.

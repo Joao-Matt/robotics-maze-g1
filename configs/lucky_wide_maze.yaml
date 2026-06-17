@@ -8,7 +8,7 @@ sim:
   max_episode_time_s: 180
 
 maze:
-  cell_size_m: 1.6
+  cell_size_m: 2.0
   width_cells: 15
   height_cells: 15
   wall_height_m: 1.2
@@ -29,8 +29,8 @@ robot:
 
 oracle:
   planner: bfs
-  waypoint_tolerance_m: 0.35
-  goal_tolerance_m: 0.5
+  waypoint_tolerance_m: 0.45
+  goal_tolerance_m: 0.6
   heading_threshold_rad: 0.45
   forward_speed_mps: 0.8
   arc_turn_speed_mps: 0.4

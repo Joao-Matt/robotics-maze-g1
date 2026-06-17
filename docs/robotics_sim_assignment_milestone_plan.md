@@ -969,6 +969,114 @@ Also update docs/worklog.md for this milestone. Include what changed, why the ma
 
 You can run one seed in oracle mode and see the robot or proxy agent follow waypoints toward the goal.
 
+## Current implementation status — 2026-06-17
+
+Milestone 5 is mostly implemented on this branch, with one important scope change: the repo now validates waypoint following with the Lucky G1 walking policy in explicit oracle/debug runners instead of only a generic point-robot or proxy interface.
+
+### Implemented
+
+- `nav/controller.py` contains the baseline waypoint follower:
+  - accepts `Pose2D` and world-frame waypoints
+  - computes heading error with wrapped angles
+  - advances waypoint index by tolerance
+  - reports `RUNNING` and `GOAL_REACHED`
+  - outputs `VelocityCommand(vx, vy, yaw_rate)`
+  - uses a small forward crawl during large heading-error turns because the Lucky walking policy does not reliably rotate in place with `vx=0`
+- `sim/locomotion_policy_adapter.py` provides the robot command boundary used by the visual walking flows:
+  - `VelocityCommand`
+  - placeholder adapter
+  - Lucky walker adapter using the Lucky G1 model/policy
+  - compatibility reports for policy/model checks
+- `scripts/run_milestone_4.py` runs the Lucky G1 walker through oracle waypoints using MuJoCo ground-truth pose in a clearly labeled oracle/debug mode.
+- `nav/oracle_follow.py` adds a more robust turn-aware follower for the Lucky policy:
+  - `FOLLOW_STRAIGHT`
+  - `PRE_TURN_SLOWDOWN`
+  - `ARC_TURN`
+  - `POST_TURN_REALIGN`
+  - `RECOVERY`
+  - `GOAL_REACHED`
+  - `FAILED`
+- `scripts/run_g1_oracle_follow.py` is the current preferred Milestone 5 visual runner. It uses heading-aware A*, pre-turn points, arc-turn metadata, bounded stuck recovery, and writes inspectable artifacts.
+- The runner writes:
+  - dashboard HTML
+  - final MuJoCo render
+  - topdown path/trajectory overlay SVG
+  - trajectory CSV
+  - commands CSV
+  - controller event JSONL
+  - summary JSON
+  - policy compatibility JSON
+- Tests cover:
+  - waypoint heading behavior
+  - waypoint switching
+  - goal reached
+  - angle wrapping
+  - right-turn yaw sign
+  - left-turn yaw sign
+  - pre-turn point generation
+  - arc-turn `vx > 0`
+  - stuck recovery trigger
+  - bounded recovery attempts
+  - heading-aware A* turn-penalty behavior
+
+### Current commands
+
+Use these for the current Milestone 5 implementation:
+
+```bash
+make g1-oracle-follow SEED=123
+make view-g1-oracle-follow SEED=123
+make view-g1-oracle-follow SEED=5 ORACLE_FOLLOW_DURATION=18 CORRIDOR_WIDTH_M=2.0 ORACLE_FOLLOW_LABEL=rightturn
+```
+
+Useful artifacts:
+
+```text
+runs/visual/g1_oracle_follow_seed-123_dashboard.html
+runs/visual/g1_oracle_follow_seed-123_summary.json
+runs/visual/g1_oracle_follow_seed-123_topdown_overlay.svg
+runs/visual/g1_oracle_follow_seed-123_trajectory.csv
+runs/visual/g1_oracle_follow_seed-123_commands.csv
+runs/visual/g1_oracle_follow_seed-123_events.jsonl
+runs/visual/g1_oracle_follow_seed-123_final.png
+```
+
+The latest right-turn validation artifact is:
+
+```text
+runs/visual/g1_oracle_follow_rightturn_seed-5_dashboard.html
+```
+
+That run reached a known right turn, logged `turn_direction=right`, commanded `vx=0.4` with `yaw_rate=-0.8` during `ARC_TURN`, reached `POST_TURN_REALIGN`, and reported zero wall contacts before timing out due to the short inspection duration.
+
+### Partially implemented or intentionally deferred
+
+- `sim/robot_interface.py` still has the original Milestone 1 placeholder `apply_command()` and is not yet the main velocity-command actuation boundary.
+  - Current walking runners use `LocomotionPolicyAdapter.step(model, data, VelocityCommand, dt)` instead.
+  - Later cleanup should either update `RobotInterface` to delegate to the locomotion adapter or document that `RobotInterface` is only for low-level simulator state inspection.
+- There is not yet a generic `make run SEED=123 MODE=oracle` path that selects this controller.
+  - Current explicit commands are `make milestone_4`, `make view-milestone_4`, `make g1-oracle-follow`, and `make view-g1-oracle-follow`.
+- The original prompt says "rotate-before-walk"; the Lucky policy showed that pure rotation with `vx=0` is unreliable.
+  - The accepted implementation uses arc-turn/crawl-turn behavior instead.
+- Fall detection exists in the locomotion sandbox status checks, but not as a standalone reusable `nav` failure taxonomy yet.
+- Stuck recovery exists in `TurnAwareOracleFollower`, but not yet as a separate `nav/stuck_recovery.py` module. That separation is planned for the later failure-handling milestone.
+- Ground-truth pose is still used directly in these oracle/debug runners.
+  - This is allowed for Milestone 5 validation, but must remain clearly separated from later autonomous mode.
+
+### Validation recorded
+
+- `make test` passed with `58 passed`.
+- `make view-g1-oracle-follow SEED=123 ORACLE_FOLLOW_DURATION=5 ORACLE_FOLLOW_LABEL=smoke` wrote all required artifact types and reached `ARC_TURN`.
+- `make view-g1-oracle-follow SEED=5 ORACLE_FOLLOW_DURATION=18 CORRIDOR_WIDTH_M=2.0 ORACLE_FOLLOW_LABEL=rightturn` visually/logically validated a right turn:
+  - event log: `turn_direction=right`
+  - command log: `vx=0.4`, `yaw_rate=-0.8`
+  - final controller state: `POST_TURN_REALIGN`
+  - wall contacts: `0`
+
+### Result
+
+Milestone 5 can be considered functionally implemented for oracle/debug physical execution with the Lucky G1 walking policy. The remaining work is architectural cleanup: unify or clearly retire the old `RobotInterface.apply_command()` placeholder, connect the runner into a generic `MODE=oracle` command if desired, and keep all ground-truth pose use labeled as oracle/debug before starting sensor/autonomous milestones.
+
 ---
 
 # Milestone 6 — Sensor simulation and timebase

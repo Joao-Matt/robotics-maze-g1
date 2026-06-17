@@ -74,7 +74,8 @@ def build_maze_world(
     if not base_model_path.exists():
         raise FileNotFoundError(
             f"Base G1 model XML does not exist: {base_model_path}. "
-            "Run `git submodule update --init --recursive`."
+            "Run `make fetch-lucky-g1-policy` for the default Lucky model, or "
+            "`git submodule update --init --recursive` if you are using the legacy Menagerie model."
         )
 
     world_xml_path = output_dir / f"world_seed-{seed}.xml"
@@ -222,6 +223,8 @@ def _append_marker(worldbody: ET.Element, maze: Maze, cell: Cell, name: str, rgb
 def _place_stand_keyframe_at_start(tree: ET.ElementTree, maze: Maze, config: dict[str, Any]) -> None:
     root = tree.getroot()
     keyframe_name = config.get("robot", {}).get("initial_keyframe", "stand")
+    if not keyframe_name:
+        return
     keyframe = root.find("keyframe")
     if keyframe is None:
         keyframe = ET.SubElement(root, "keyframe")

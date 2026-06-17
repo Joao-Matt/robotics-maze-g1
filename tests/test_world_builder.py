@@ -22,15 +22,15 @@ def test_cell_to_world_uses_center_origin(default_config):
     maze = generate_maze_from_config(default_config, seed=123)
 
     assert cell_to_world_xy(maze, (7, 7)) == (0.0, 0.0)
-    assert cell_to_world_xy(maze, (0, 0)) == (-7.0, 7.0)
-    assert cell_to_world_xy(maze, (14, 14)) == (7.0, -7.0)
+    assert cell_to_world_xy(maze, (0, 0)) == pytest.approx((-11.2, 11.2))
+    assert cell_to_world_xy(maze, (14, 14)) == pytest.approx((11.2, -11.2))
 
 
 def test_default_start_and_goal_world_coordinates(default_config):
     maze = generate_maze_from_config(default_config, seed=123)
 
-    assert cell_to_world_xy(maze, maze.spec.start_cell) == (-6.0, 6.0)
-    assert cell_to_world_xy(maze, maze.spec.goal_cell) == (6.0, -6.0)
+    assert cell_to_world_xy(maze, maze.spec.start_cell) == pytest.approx((-9.6, 9.6))
+    assert cell_to_world_xy(maze, maze.spec.goal_cell) == pytest.approx((9.6, -9.6))
 
 
 def test_build_world_writes_expected_artifacts_and_wall_count(default_config, tmp_path):
@@ -44,8 +44,8 @@ def test_build_world_writes_expected_artifacts_and_wall_count(default_config, tm
     assert Path(result.summary_json_path).exists()
     assert Path(result.topdown_svg_path).exists()
     assert wall_count == int(np.count_nonzero(maze.grid == WALL))
-    assert result.start_world_xyz == (-6.0, 6.0, 0.79)
-    assert result.goal_world_xyz == (6.0, -6.0, 0.0)
+    assert result.start_world_xyz == pytest.approx((-9.6, 9.6, 0.76))
+    assert result.goal_world_xyz == pytest.approx((9.6, -9.6, 0.0))
 
 
 def test_start_and_goal_markers_are_visual_only(default_config, tmp_path):
@@ -59,14 +59,12 @@ def test_start_and_goal_markers_are_visual_only(default_config, tmp_path):
         assert marker.get("conaffinity") == "0"
 
 
-def test_stand_keyframe_places_robot_at_start(default_config, tmp_path):
+def test_missing_keyframe_config_does_not_create_stand_keyframe(default_config, tmp_path):
     result = build_maze_world(default_config, seed=123, output_dir=tmp_path)
     root = ET.parse(result.model_xml_path).getroot()
     key = root.find(".//key[@name='stand']")
 
-    assert key is not None
-    qpos = [float(value) for value in key.get("qpos", "").split()]
-    assert qpos[:3] == [-6.0, 6.0, 0.79]
+    assert key is None
 
 
 def test_generated_world_loads_in_mujoco_when_available(default_config, tmp_path):
@@ -75,6 +73,7 @@ def test_generated_world_loads_in_mujoco_when_available(default_config, tmp_path
 
     model = mujoco.MjModel.from_xml_path(result.model_xml_path)
 
-    assert model.nq == 36
-    assert model.nv == 35
+    assert model.nq == 50
+    assert model.nv == 49
+    assert model.nu == 43
     assert model.ngeom > 100

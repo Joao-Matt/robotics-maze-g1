@@ -12,6 +12,9 @@ dist/
 runs/*
 !runs/.gitkeep
 
+# Locally fetched third-party policy repos are intentionally not vendored.
+third_party/
+
 # Local editor/system files.
 .DS_Store
 .idea/
