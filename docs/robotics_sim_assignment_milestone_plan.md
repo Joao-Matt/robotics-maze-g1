@@ -971,7 +971,7 @@ You can run one seed in oracle mode and see the robot or proxy agent follow wayp
 
 ## Current implementation status — 2026-06-17
 
-Milestone 5 is mostly implemented on this branch, with one important scope change: the repo now validates waypoint following with the Lucky G1 walking policy in explicit oracle/debug runners instead of only a generic point-robot or proxy interface.
+Milestone 5 is functionally complete for the accepted oracle/debug baseline. The repo validates waypoint following with the Lucky G1 walking policy instead of only a generic point-robot or proxy interface.
 
 ### Implemented
 
@@ -987,7 +987,8 @@ Milestone 5 is mostly implemented on this branch, with one important scope chang
   - placeholder adapter
   - Lucky walker adapter using the Lucky G1 model/policy
   - compatibility reports for policy/model checks
-- `scripts/run_milestone_4.py` runs the Lucky G1 walker through oracle waypoints using MuJoCo ground-truth pose in a clearly labeled oracle/debug mode.
+- `scripts/run_milestone_4_planner.py` is the Milestone 4 command runner. It plans and saves the oracle path without executing robot commands.
+- `scripts/run_milestone_4.py` is retained only as a legacy implementation reference; no Milestone 4 Make target invokes robot execution.
 - `nav/oracle_follow.py` adds a more robust turn-aware follower for the Lucky policy:
   - `FOLLOW_STRAIGHT`
   - `PRE_TURN_SLOWDOWN`
@@ -1024,10 +1025,12 @@ Milestone 5 is mostly implemented on this branch, with one important scope chang
 Use these for the current Milestone 5 implementation:
 
 ```bash
-make g1-oracle-follow SEED=123
-make view-g1-oracle-follow SEED=123
-make view-g1-oracle-follow SEED=5 ORACLE_FOLLOW_DURATION=18 CORRIDOR_WIDTH_M=2.0 ORACLE_FOLLOW_LABEL=rightturn
+make milestone_5 SEED=123
+make view-milestone_5 SEED=123
+make report-milestone_5 SEED=5 MILESTONE_5_DURATION=18 CORRIDOR_WIDTH_M=2.0 MILESTONE_5_LABEL=rightturn
 ```
+
+`milestone_5` and `view-milestone_5` launch the live MuJoCo viewer. `report-milestone_5` is the explicit headless artifact/dashboard command. The older `g1-oracle-follow` names are compatibility aliases.
 
 Useful artifacts:
 
@@ -1055,7 +1058,7 @@ That run reached a known right turn, logged `turn_direction=right`, commanded `v
   - Current walking runners use `LocomotionPolicyAdapter.step(model, data, VelocityCommand, dt)` instead.
   - Later cleanup should either update `RobotInterface` to delegate to the locomotion adapter or document that `RobotInterface` is only for low-level simulator state inspection.
 - There is not yet a generic `make run SEED=123 MODE=oracle` path that selects this controller.
-  - Current explicit commands are `make milestone_4`, `make view-milestone_4`, `make g1-oracle-follow`, and `make view-g1-oracle-follow`.
+  - The live execution commands are `make milestone_5` and `make view-milestone_5`; `make report-milestone_5` runs headlessly, and Milestone 4 remains planner-only.
 - The original prompt says "rotate-before-walk"; the Lucky policy showed that pure rotation with `vx=0` is unreliable.
   - The accepted implementation uses arc-turn/crawl-turn behavior instead.
 - Fall detection exists in the locomotion sandbox status checks, but not as a standalone reusable `nav` failure taxonomy yet.
@@ -1075,7 +1078,7 @@ That run reached a known right turn, logged `turn_direction=right`, commanded `v
 
 ### Result
 
-Milestone 5 can be considered functionally implemented for oracle/debug physical execution with the Lucky G1 walking policy. The remaining work is architectural cleanup: unify or clearly retire the old `RobotInterface.apply_command()` placeholder, connect the runner into a generic `MODE=oracle` command if desired, and keep all ground-truth pose use labeled as oracle/debug before starting sensor/autonomous milestones.
+Milestone 5 is accepted as functionally complete for oracle/debug physical execution with the Lucky G1 walking policy. The remaining items are later architectural cleanup: unify or clearly retire the old `RobotInterface.apply_command()` placeholder, connect the runner into a generic `MODE=oracle` command if desired, and keep all ground-truth pose use labeled as oracle/debug before starting sensor/autonomous milestones.
 
 ---
 
@@ -1812,8 +1815,8 @@ Use this as the master checklist.
 [ ] M1  MuJoCo + Unitree G1 bring-up in empty world
 [ ] M2  Seeded maze generator and validator
 [ ] M3  Maze-to-MuJoCo world builder
-[ ] M4  Oracle planner baseline
-[ ] M5  Waypoint follower and command interface
+[x] M4  Oracle planner baseline
+[x] M5  Waypoint follower and command interface (accepted oracle/debug baseline)
 [ ] M6  Sensor simulation and timestamp system
 [ ] M7  Data logger and run folder schema
 [ ] M8  KPI computation for one run

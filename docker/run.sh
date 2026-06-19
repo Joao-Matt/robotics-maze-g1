@@ -10,6 +10,8 @@ CONTAINER_VENV="${CONTAINER_VENV:-/usr}"
 MUJOCO_GL_VALUE="${MUJOCO_GL:-osmesa}"
 DOCKER_TTY_ARGS=()
 
+mkdir -p "${REPO_ROOT}/.tmp"
+
 if [ -t 0 ] && [ -t 1 ]; then
   DOCKER_TTY_ARGS=(-it)
 fi
@@ -26,6 +28,7 @@ docker run --rm "${DOCKER_TTY_ARGS[@]}" \
   -e VENV="${CONTAINER_VENV}" \
   -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
   -e MUJOCO_GL="${MUJOCO_GL_VALUE}" \
+  -e TMPDIR=/workspace/.tmp \
   -e PYTHONUNBUFFERED=1 \
   -v /etc/passwd:/etc/passwd:ro \
   -v /etc/group:/etc/group:ro \

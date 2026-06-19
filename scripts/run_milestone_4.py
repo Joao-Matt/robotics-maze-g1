@@ -1,4 +1,4 @@
-"""Run Milestone 4 oracle waypoint walking with the Lucky G1 policy."""
+"""Legacy oracle waypoint walker; robot execution is exposed as Milestone 5."""
 
 from __future__ import annotations
 

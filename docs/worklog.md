@@ -6,12 +6,12 @@
 Create a clean, Git-ready repository skeleton with reproducible Python setup, basic configuration conventions, smoke validation, and initial tests. Do not implement maze generation, MuJoCo simulation, robot control, metrics, or demo behavior yet.
 
 ### Changes made
-- Created the repository at `/home/gary/dev_workspaces/robotics-maze-g1`.
+- Created the repository in the user's development workspace.
 - Added package folders for `sim`, `maze`, `nav`, `data`, `eval`, and `demo`.
 - Added `configs/default.yaml` with initial project, simulation, maze, robot, and logging settings.
 - Added `sim/config.py` for YAML loading and top-level config validation.
 - Added `scripts/smoke_test.py`, pytest tests, `Makefile`, `requirements.txt`, `.gitignore`, `.python-version`, `README.md`, and ADR template.
-- Installed pyenv at `/home/gary/.pyenv`, built OpenSSL 3.0.16 at `/home/gary/.local/openssl`, and installed Python 3.11.15 with SSL support.
+- Installed pyenv under `$HOME/.pyenv`, built OpenSSL 3.0.16 under `$HOME/.local/openssl`, and installed Python 3.11.15 with SSL support.
 
 ### Key decisions
 - [REPRODUCIBILITY] Decision: use pyenv-managed Python 3.11 plus a repo-local `.venv`.
@@ -43,12 +43,12 @@ Create a clean, Git-ready repository skeleton with reproducible Python setup, ba
 - Problem: system Python was 3.8.10 and pyenv was not installed.
   - Symptom: `command -v pyenv` returned no result.
   - Suspected cause: fresh Ubuntu 20.04 environment.
-  - Fix or mitigation: installed pyenv under `/home/gary/.pyenv` and targeted Python 3.11.15.
+  - Fix or mitigation: installed pyenv under `$HOME/.pyenv` and targeted Python 3.11.15.
   - Remaining risk: this Python was built without optional modules that require unavailable system headers: `bz2`, `curses`, `readline`, `sqlite3`, `tkinter`, and `lzma`.
 - Problem: the first Python 3.11.15 build lacked `_ssl`.
   - Symptom: pyenv reported `ERROR: The Python ssl extension was not compiled`.
   - Suspected cause: `libssl-dev` was missing and `sudo apt` required an interactive password.
-  - Fix or mitigation: built OpenSSL 3.0.16 under `/home/gary/.local/openssl`, rebuilt Python with `CONFIGURE_OPTS=--with-openssl=/home/gary/.local/openssl`, and verified `ssl.OPENSSL_VERSION`.
+  - Fix or mitigation: built OpenSSL 3.0.16 under `$HOME/.local/openssl`, rebuilt Python with `CONFIGURE_OPTS=--with-openssl=$HOME/.local/openssl`, and verified `ssl.OPENSSL_VERSION`.
   - Remaining risk: future Python rebuilds on this machine should use the same OpenSSL environment variables unless system development packages are installed.
 
 ### Result
@@ -456,7 +456,7 @@ Use the pretrained G1 walking policy from `luckyrobots/g1-manipulation-challenge
 
 ### Validation performed
 - Commands run:
-  - `LD_LIBRARY_PATH="/home/gary/.local/openssl/lib:$LD_LIBRARY_PATH" .venv/bin/python -m pip install 'onnxruntime>=1.17'`
+  - `LD_LIBRARY_PATH="$HOME/.local/openssl/lib:$LD_LIBRARY_PATH" .venv/bin/python -m pip install 'onnxruntime>=1.17'`
   - `make fetch-lucky-g1-policy`
   - `make g1-loco-view POLICY=lucky_walker G1_LOCO_DURATION=0.2`
   - scripted 3 s rollout with `vx=0.25`
@@ -475,7 +475,7 @@ Use the pretrained G1 walking policy from `luckyrobots/g1-manipulation-challenge
   - Symptom: MuJoCo looked for OBJ meshes beside the Lucky repo root instead of under `assets/`.
   - Fix or mitigation: generate the flat wrapper inside the Lucky repo root so its original `meshdir="assets"` resolves as upstream intended.
 - Problem: `pip install onnxruntime` initially failed because the venv needs the local OpenSSL library path.
-  - Fix or mitigation: install with `LD_LIBRARY_PATH="/home/gary/.local/openssl/lib:$LD_LIBRARY_PATH"`, matching the Makefile command environment.
+  - Fix or mitigation: install with `LD_LIBRARY_PATH="$HOME/.local/openssl/lib:$LD_LIBRARY_PATH"`, matching the Makefile command environment.
 
 ### Result
 The sandbox now has a real walking policy path. `make g1-loco-sandbox POLICY=lucky_walker` opens a live viewer with the Lucky walker loaded, and teleop velocity commands are converted into G1 joint targets through the upstream 99D observation to 29D action pipeline.
@@ -763,6 +763,7 @@ Create a portable Docker development environment that keeps ROS 2 Humble, Nav2, 
   - `make docker-smoke`
   - `make docker-check-ros`
   - `make docker-milestone_4`
+  - `make docker-milestone_5`
   - `make docker-build-multiarch`
 - Added README Docker quick-start documentation.
 - Added lightweight tests for Docker support files, executable bits, `.dockerignore`, README docs, and Make targets.
@@ -804,4 +805,65 @@ Create a portable Docker development environment that keeps ROS 2 Humble, Nav2, 
   - Multi-architecture manifests normally require `PUSH=1` and a registry image.
 
 ### Next actions
-If a desktop display is available, run `make docker-run-gui` and test `rviz2` or `make milestone_4 SEED=123` from inside the container.
+If a desktop display is available, run `make docker-run-gui` and test `rviz2` or `make milestone_5 SEED=123` from inside the container.
+
+## 2026-06-19 - Separate Milestone 4 planning from Milestone 5 execution
+
+### Goal
+Keep the milestone commands aligned with the assignment plan: Milestone 4 produces an oracle path, while Milestone 5 executes that path with the robot.
+
+### Changes made
+- Added `scripts/run_milestone_4_planner.py` for planner-only SVG, ASCII, and JSON artifacts.
+- Changed `make milestone_4` and its view/wide variants so they never launch MuJoCo robot execution.
+- Added `make milestone_5`, `make view-milestone_5`, and `make docker-milestone_5` for the turn-aware Lucky G1 oracle follower.
+- Preserved `g1-oracle-follow` commands as compatibility aliases for Milestone 5.
+- Updated README and milestone-plan language, commands, and completion checklist.
+- Added regression tests for the M4/M5 command boundary.
+
+### Decision
+- [REPRODUCIBILITY][DEMO_RISK] Milestone 5 accepts explicit oracle/debug execution as its completion baseline.
+  - Milestone 4 uses the generated maze grid to plan and convert waypoints only.
+  - Milestone 5 uses those oracle concepts plus MuJoCo ground-truth pose to command the real Lucky G1 policy.
+  - This remains clearly distinct from later sensor-based autonomous navigation.
+
+### Validation performed
+- `make milestone_4 SEED=123` produced a 61-cell path without loading robot execution.
+- The short `view-milestone_5` command check loaded the Lucky G1 policy, executed simulation commands, wrote all expected artifacts, and reported `milestone: 5` plus `mode: milestone_5_oracle_path_execution`.
+- Focused milestone and Docker-support tests passed.
+
+### Viewer command correction
+- A user run showed `view-milestone_5` and `view-g1-oracle-follow` reporting `viewer_requested: false`; only the HTML dashboard opened.
+- Changed both `view-*` commands to launch the live MuJoCo simulator.
+- Moved the previous headless/dashboard behavior to `report-milestone_5` and `report-g1-oracle-follow` so the command names state what will appear.
+
+## 2026-06-19 - External-storage guardrails and migration helper
+
+### Goal
+Prevent Docker 29/containerd and generated project data from silently filling the small host root partition.
+
+### Changes made
+- Added an ignored `.env.storage` policy with a portable committed example.
+- Added `make storage-check` before large-output, dependency-fetch, test, Docker-build, and milestone targets.
+- Added a container-aware check that requires `/workspace` to be bind-mounted and a host check that validates the configured mount, UUID, Docker root, and containerd root.
+- Added a privileged migration helper that backs up system configuration, removes only conservative disposable data, quarantines old Docker/containerd stores externally, configures persistent storage, and verifies the restarted services.
+
+### Current system finding
+- Docker `data-root` already points externally, but Docker Engine 29 uses the system containerd snapshotter and `/etc/containerd/config.toml` does not set an external root.
+- The external filesystem is mounted now, but its fstab entry is commented out.
+- The administrative migration requires the user's sudo authentication and therefore cannot be run non-interactively by Codex.
+
+## 2026-06-19 - Milestone 5 waypoint capture and recovery correction
+
+### Evidence
+- Seed 1 passed within `0.702 m` of the first arc waypoint before wall contact, but the old `0.35 m` capture radius kept commanding the left turn.
+- Seed 123 passed within `0.04 m` of its post-turn waypoint, but the old completion rule rejected it because heading error was still above `0.3 rad`; wall contact began later.
+- Both runs entered recovery twice within `0.02 s` because the next controller update overwrote `RECOVERY` with the segment state before executing the timed recovery phases.
+
+### Changes made
+- Kept turn-entry approach capture precise at `0.35 m`, while increasing arc-exit and post-turn capture to `0.75 m` for default and wide configurations.
+- Kept final-goal capture separate and strict at `0.5 m`.
+- Removed the heading gate from intermediate point capture so the following segment can continue correcting orientation.
+- Removed projection-only segment completion, which could accept a robot that was far laterally from the point.
+- Fixed recovery-state ordering so stop, reverse, and recovery-arc phases run for their configured durations.
+- Reset the bounded recovery budget after segment completion so unrelated later obstacles receive their own recovery attempts.
+- Added regression tests for broad intermediate capture, strict final capture, and persistent timed recovery.

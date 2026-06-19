@@ -40,6 +40,8 @@ def test_default_oracle_speed_is_visible_for_lucky_walker():
     assert config["oracle"]["turn_start_distance_m"] == 0.8
     assert config["oracle"]["max_recovery_attempts"] == 2
     assert config["oracle"]["turn_penalty_cost"] == 2.0
+    assert config["oracle"]["waypoint_tolerance_m"] == 0.75
+    assert config["oracle"]["approach_tolerance_m"] == 0.35
 
 
 def test_default_corridor_width_is_lucky_walker_friendly():

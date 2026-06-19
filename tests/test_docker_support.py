@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import subprocess
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,8 @@ def test_docker_support_files_exist_and_scripts_are_executable():
         PROJECT_ROOT / "docker" / "build_multiarch.sh",
         PROJECT_ROOT / ".dockerignore",
         PROJECT_ROOT / "scripts" / "check_ros_docker_env.sh",
+        PROJECT_ROOT / "scripts" / "check_storage_layout.sh",
+        PROJECT_ROOT / "scripts" / "migrate_system_storage.sh",
     ]
 
     for path in required_files:
@@ -55,7 +58,9 @@ def test_makefile_exposes_docker_targets():
         "docker-smoke:",
         "docker-check-ros:",
         "docker-milestone_4:",
+        "docker-milestone_5:",
         "docker-build-multiarch:",
+        "storage-check:",
     ):
         assert target in makefile
 
@@ -72,3 +77,36 @@ def test_headless_docker_defaults_to_osmesa_rendering():
 
     assert 'MUJOCO_GL_VALUE="${MUJOCO_GL:-osmesa}"' in run_script
     assert 'MUJOCO_GL_VALUE="${MUJOCO_GL:-glfw}"' in gui_script
+
+
+def test_gui_docker_fails_clearly_without_display():
+    env = os.environ.copy()
+    env.pop("DISPLAY", None)
+
+    result = subprocess.run(
+        [str(PROJECT_ROOT / "docker" / "run_gui.sh")],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "DISPLAY is not set" in result.stderr
+    assert "docker/run.sh" in result.stderr
+
+
+def test_storage_support_is_portable_and_machine_config_is_ignored():
+    gitignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+    example = (PROJECT_ROOT / ".env.storage.example").read_text(encoding="utf-8")
+    scripts = "\n".join(
+        (PROJECT_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        for name in ("check_storage_layout.sh", "migrate_system_storage.sh")
+    )
+
+    assert ".env.storage" in gitignore
+    assert "REQUIRED_STORAGE_MOUNT" in example
+    assert "EXPECTED_STORAGE_UUID" in example
+    for machine_path in ("/mnt/robotics_ssd", "/media/robojoe", "/home/robojoe"):
+        assert machine_path not in scripts

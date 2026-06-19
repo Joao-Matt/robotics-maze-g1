@@ -76,7 +76,8 @@ def main() -> int:
     }
     started = time.time()
     summary: dict[str, object] = {
-        "mode": "g1_oracle_follow_turn_aware",
+        "milestone": 5,
+        "mode": "milestone_5_oracle_path_execution",
         "seed": args.seed,
         "policy": "lucky_walker",
         "final_status": "ERROR",
@@ -86,8 +87,8 @@ def main() -> int:
         "viewer_opened": False,
         "proxy_body_used": False,
         "contact_summary": {},
-        "rerun_live_command": f"make g1-oracle-follow SEED={args.seed}",
-        "rerun_headless_command": f"make view-g1-oracle-follow SEED={args.seed}",
+        "rerun_live_command": f"make milestone_5 SEED={args.seed}",
+        "rerun_headless_command": f"make report-milestone_5 SEED={args.seed}",
     }
 
     try:
@@ -436,7 +437,8 @@ def _write_event(events_file, event_counts: dict[str, int], event: dict[str, obj
 def _follower_config(config: dict) -> TurnAwareFollowerConfig:
     values = config.get("oracle", {})
     return TurnAwareFollowerConfig(
-        waypoint_tolerance_m=float(values.get("waypoint_tolerance_m", 0.35)),
+        approach_tolerance_m=float(values.get("approach_tolerance_m", 0.35)),
+        waypoint_tolerance_m=float(values.get("waypoint_tolerance_m", 0.75)),
         goal_tolerance_m=float(values.get("goal_tolerance_m", config.get("robot", {}).get("goal_tolerance_m", 0.5))),
         heading_threshold_rad=float(values.get("heading_threshold_rad", 0.45)),
         forward_speed_mps=float(values.get("forward_speed_mps", 0.8)),
@@ -534,7 +536,7 @@ def _write_dashboard(path: Path, summary: dict[str, object]) -> None:
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Turn-aware G1 Oracle Follow</title>
+  <title>Milestone 5 — Turn-aware G1 Oracle Path Execution</title>
   <style>
     body {{ margin: 0; font-family: Arial, sans-serif; background: #f6f7f9; color: #17202a; }}
     main {{ max-width: 1280px; margin: 0 auto; padding: 28px; }}
@@ -549,7 +551,7 @@ def _write_dashboard(path: Path, summary: dict[str, object]) -> None:
 </head>
 <body>
 <main>
-  <h1>Turn-aware G1 Oracle Follow</h1>
+  <h1>Milestone 5 — Turn-aware G1 Oracle Path Execution</h1>
   <table>{rows}</table>
   <div class="grid">
     <section><h2>Path Overlay</h2>{overlay}</section>

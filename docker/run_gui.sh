@@ -11,6 +11,8 @@ CONTAINER_VENV="${CONTAINER_VENV:-/usr}"
 MUJOCO_GL_VALUE="${MUJOCO_GL:-glfw}"
 DOCKER_TTY_ARGS=()
 
+mkdir -p "${REPO_ROOT}/.tmp"
+
 if [ -t 0 ] && [ -t 1 ]; then
   DOCKER_TTY_ARGS=(-it)
 fi
@@ -20,8 +22,16 @@ if [ "$#" -eq 0 ]; then
 fi
 
 if [ -z "${DISPLAY_VALUE}" ]; then
-  echo "DISPLAY is not set. Starting container anyway, but GUI apps such as rviz2 or the MuJoCo viewer may not open." >&2
-elif command -v xhost >/dev/null 2>&1; then
+  echo "DISPLAY is not set; GUI Docker runs require an active X11 display. Use docker/run.sh for headless work." >&2
+  exit 1
+fi
+
+if [ ! -d /tmp/.X11-unix ]; then
+  echo "/tmp/.X11-unix is unavailable; GUI Docker runs require an active X11 socket. Use docker/run.sh for headless work." >&2
+  exit 1
+fi
+
+if command -v xhost >/dev/null 2>&1; then
   xhost +local:docker >/dev/null 2>&1 || true
 fi
 
@@ -35,6 +45,7 @@ DOCKER_ARGS=(
   -e "VENV=${CONTAINER_VENV}"
   -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
   -e "MUJOCO_GL=${MUJOCO_GL_VALUE}"
+  -e TMPDIR=/workspace/.tmp
   -e PYTHONUNBUFFERED=1
   -e "DISPLAY=${DISPLAY_VALUE}"
   -e QT_X11_NO_MITSHM=1

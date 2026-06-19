@@ -25,7 +25,8 @@ TurnDirection = Literal["left", "right"]
 
 @dataclass(frozen=True)
 class TurnAwareFollowerConfig:
-    waypoint_tolerance_m: float = 0.35
+    approach_tolerance_m: float = 0.35
+    waypoint_tolerance_m: float = 0.75
     goal_tolerance_m: float = 0.5
     heading_threshold_rad: float = 0.45
     forward_speed_mps: float = 0.8
@@ -146,6 +147,10 @@ class TurnAwareOracleFollower:
             return self._output(VelocityCommand(), GOAL_REACHED, pose, events)
 
         segment = self.current_segment
+        if self.state == RECOVERY:
+            command = self._recovery_command(sim_time_s, events)
+            return self._output(command, self.state, pose, events, self.failure_reason)
+
         self._set_state(segment.state, sim_time_s, events)
         if segment.state == ARC_TURN and segment.index not in self._arc_announced_segments:
             self._arc_announced_segments.add(segment.index)
@@ -161,11 +166,8 @@ class TurnAwareOracleFollower:
                 )
             )
 
-        if self.state == RECOVERY:
-            command = self._recovery_command(sim_time_s, events)
-        else:
-            command = self._segment_command(pose, segment)
-            command = self._maybe_enter_recovery(command, pose, sim_time_s, events)
+        command = self._segment_command(pose, segment)
+        command = self._maybe_enter_recovery(command, pose, sim_time_s, events)
 
         return self._output(command, self.state, pose, events, self.failure_reason)
 
@@ -185,6 +187,7 @@ class TurnAwareOracleFollower:
                 )
             )
             self.segment_index += 1
+            self.recovery_attempts = 0
             self._best_progress = float("-inf")
             self._last_progress_time = sim_time_s
             if self.segment_index >= len(self.path.segments):
@@ -193,14 +196,12 @@ class TurnAwareOracleFollower:
 
     def _segment_complete(self, pose: Pose2D, segment: NavigationSegment) -> bool:
         distance = _distance_xy((pose.x, pose.y), segment.end_xy)
-        tolerance = self.config.goal_tolerance_m if segment.index == len(self.path.segments) - 1 else self.config.waypoint_tolerance_m
-        progress = _segment_progress_m(pose, segment)
-        if segment.state == ARC_TURN:
-            return distance <= max(tolerance, 0.45) or progress >= max(0.0, segment.length_m - tolerance)
-        if segment.state == POST_TURN_REALIGN:
-            heading_error = abs(wrap_angle(segment.target_heading_rad - pose.yaw))
-            return distance <= tolerance and heading_error <= self.config.post_turn_heading_tolerance_rad
-        return distance <= tolerance or progress >= max(0.0, segment.length_m - tolerance)
+        is_final_segment = segment.index == len(self.path.segments) - 1
+        if is_final_segment:
+            return distance <= self.config.goal_tolerance_m
+        if segment.state in (FOLLOW_STRAIGHT, PRE_TURN_SLOWDOWN):
+            return distance <= self.config.approach_tolerance_m
+        return distance <= self.config.waypoint_tolerance_m
 
     def _segment_command(self, pose: Pose2D, segment: NavigationSegment) -> VelocityCommand:
         if segment.state == ARC_TURN:

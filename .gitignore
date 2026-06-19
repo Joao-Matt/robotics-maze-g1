@@ -19,3 +19,7 @@ third_party/
 .DS_Store
 .idea/
 .vscode/
+.tmp/
+
+# Machine-local storage policy (see .env.storage.example).
+.env.storage

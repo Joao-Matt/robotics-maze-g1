@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from maze.grid import FREE, WALL, Maze, MazeSpec
@@ -5,7 +7,10 @@ from nav.controller import Pose2D
 from nav.oracle_follow import (
     ARC_TURN,
     FAILED,
+    FOLLOW_STRAIGHT,
+    PRE_TURN_SLOWDOWN,
     RECOVERY,
+    GOAL_REACHED,
     NavigationSegment,
     TurnAwareFollowerConfig,
     TurnAwareOracleFollower,
@@ -96,6 +101,129 @@ def test_recovery_attempts_are_bounded():
 
     assert output.state == FAILED
     assert output.failure_reason == "max recovery attempts exceeded"
+
+
+def test_recovery_state_persists_until_recovery_timing_finishes():
+    follower = TurnAwareOracleFollower(
+        _straight_path(),
+        TurnAwareFollowerConfig(stuck_timeout_s=0.1, stuck_min_progress_m=0.01),
+    )
+    pose = Pose2D(x=0.0, y=0.0, yaw=0.0)
+
+    follower.update(pose, sim_time_s=0.0)
+    entered = follower.update(pose, sim_time_s=0.2)
+    still_stopped = follower.update(pose, sim_time_s=0.22)
+    reversing = follower.update(pose, sim_time_s=0.6)
+
+    assert entered.state == RECOVERY
+    assert still_stopped.state == RECOVERY
+    assert still_stopped.recovery_attempts == 1
+    assert still_stopped.command.vx == 0.0
+    assert reversing.state == RECOVERY
+    assert reversing.command.vx < 0.0
+
+
+def test_large_intermediate_waypoint_capture_advances_without_heading_gate():
+    first = NavigationSegment(
+        index=0,
+        state="POST_TURN_REALIGN",
+        start_xy=(0.0, 0.0),
+        end_xy=(1.0, 0.0),
+        target_heading_rad=0.0,
+    )
+    final = NavigationSegment(
+        index=1,
+        state="FOLLOW_STRAIGHT",
+        start_xy=(1.0, 0.0),
+        end_xy=(3.0, 0.0),
+        target_heading_rad=0.0,
+    )
+    follower = TurnAwareOracleFollower(
+        TurnAwarePath(
+            dense_cells=[(1, 1), (1, 2)],
+            dense_waypoints=[(0.0, 0.0, 0.0), (3.0, 0.0, 0.0)],
+            segments=[first, final],
+            pre_turn_points=[],
+            post_turn_points=[],
+            arc_segments=[],
+        ),
+        TurnAwareFollowerConfig(waypoint_tolerance_m=0.75),
+    )
+
+    output = follower.update(Pose2D(x=0.4, y=0.0, yaw=math.pi), sim_time_s=0.0)
+
+    assert output.segment_index == 1
+    assert output.state == "FOLLOW_STRAIGHT"
+
+
+def test_turn_approach_keeps_precise_capture_before_arc_starts():
+    approach = NavigationSegment(
+        index=0,
+        state=PRE_TURN_SLOWDOWN,
+        start_xy=(0.0, 0.0),
+        end_xy=(1.0, 0.0),
+        target_heading_rad=0.0,
+    )
+    arc = NavigationSegment(
+        index=1,
+        state=ARC_TURN,
+        start_xy=(1.0, 0.0),
+        end_xy=(1.5, 0.5),
+        target_heading_rad=math.pi / 2,
+        turn_direction="left",
+        yaw_rate_radps=0.8,
+    )
+    follower = TurnAwareOracleFollower(
+        TurnAwarePath(
+            dense_cells=[(1, 1), (1, 2)],
+            dense_waypoints=[(0.0, 0.0, 0.0), (1.5, 0.5, 0.0)],
+            segments=[approach, arc],
+            pre_turn_points=[],
+            post_turn_points=[],
+            arc_segments=[arc],
+        ),
+        TurnAwareFollowerConfig(approach_tolerance_m=0.35, waypoint_tolerance_m=0.75),
+    )
+
+    output = follower.update(Pose2D(x=0.4, y=0.0, yaw=0.0), sim_time_s=0.0)
+
+    assert output.segment_index == 0
+    assert output.state == PRE_TURN_SLOWDOWN
+
+
+def test_final_goal_keeps_separate_strict_tolerance():
+    follower = TurnAwareOracleFollower(
+        _straight_path(),
+        TurnAwareFollowerConfig(waypoint_tolerance_m=0.75, goal_tolerance_m=0.5),
+    )
+
+    outside = follower.update(Pose2D(x=2.4, y=0.0, yaw=0.0), sim_time_s=0.0)
+    reached = follower.update(Pose2D(x=2.51, y=0.0, yaw=0.0), sim_time_s=0.02)
+
+    assert outside.state != GOAL_REACHED
+    assert reached.state == GOAL_REACHED
+
+
+def test_recovery_budget_resets_after_segment_completion():
+    first = NavigationSegment(0, FOLLOW_STRAIGHT, (0.0, 0.0), (1.0, 0.0), 0.0)
+    second = NavigationSegment(1, FOLLOW_STRAIGHT, (1.0, 0.0), (3.0, 0.0), 0.0)
+    follower = TurnAwareOracleFollower(
+        TurnAwarePath(
+            dense_cells=[(1, 1), (1, 2)],
+            dense_waypoints=[(0.0, 0.0, 0.0), (3.0, 0.0, 0.0)],
+            segments=[first, second],
+            pre_turn_points=[],
+            post_turn_points=[],
+            arc_segments=[],
+        ),
+        TurnAwareFollowerConfig(),
+    )
+    follower.recovery_attempts = 2
+
+    output = follower.update(Pose2D(x=0.8, y=0.0, yaw=0.0), sim_time_s=1.0)
+
+    assert output.segment_index == 1
+    assert output.recovery_attempts == 0
 
 
 def test_heading_astar_turn_penalty_prefers_low_zigzag_route_on_synthetic_map():

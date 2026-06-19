@@ -26,7 +26,7 @@ runs/           generated run artifacts, ignored by Git
 The project is intended to use Python 3.11 from pyenv and a repo-local virtual environment:
 
 ```bash
-cd /home/gary/dev_workspaces/robotics-maze-g1
+cd "$HOME/dev_workspaces/robotics-maze-g1"
 git submodule update --init --recursive
 make setup
 ```
@@ -35,15 +35,15 @@ If Python 3.11.15 is missing, install it first:
 
 ```bash
 env \
-  CPPFLAGS=-I/home/gary/.local/openssl/include \
-  LDFLAGS=-L/home/gary/.local/openssl/lib \
-  PKG_CONFIG_PATH=/home/gary/.local/openssl/lib/pkgconfig \
-  LD_LIBRARY_PATH=/home/gary/.local/openssl/lib \
-  CONFIGURE_OPTS=--with-openssl=/home/gary/.local/openssl \
-  /home/gary/.pyenv/bin/pyenv install 3.11.15
+  CPPFLAGS="-I$HOME/.local/openssl/include" \
+  LDFLAGS="-L$HOME/.local/openssl/lib" \
+  PKG_CONFIG_PATH="$HOME/.local/openssl/lib/pkgconfig" \
+  LD_LIBRARY_PATH="$HOME/.local/openssl/lib" \
+  CONFIGURE_OPTS="--with-openssl=$HOME/.local/openssl" \
+  "$HOME/.pyenv/bin/pyenv" install 3.11.15
 ```
 
-On this Ubuntu 20.04 environment, Python 3.11.15 was built against a user-local OpenSSL at `/home/gary/.local/openssl` because interactive `sudo apt` was not available for installing `libssl-dev`. The Makefile sets `LD_LIBRARY_PATH` for repo commands so the venv can use that OpenSSL runtime.
+On the original Ubuntu 20.04 development environment, Python 3.11.15 was built against a user-local OpenSSL under `$HOME/.local/openssl` because interactive `sudo apt` was not available for installing `libssl-dev`. The Makefile sets `LD_LIBRARY_PATH` for repo commands so the venv can use that OpenSSL runtime.
 
 ## Docker Quick Start
 
@@ -58,7 +58,7 @@ make docker-smoke
 make docker-check-ros
 ```
 
-`make docker-run` starts a terminal/headless development shell. `make docker-run-gui` starts a GUI-capable shell for RViz, MuJoCo viewer runs, and dashboard opening when the Linux host has X11 display support. Inside either container, the repo is bind-mounted at `/workspace`, so normal host edits appear immediately inside Docker. Rebuild the image only when dependencies change: `docker/Dockerfile`, `requirements.txt`, apt packages, ROS packages, or system libraries.
+`make docker-run` starts a terminal/headless development shell. `make docker-run-gui` starts a GUI-capable shell for RViz, MuJoCo viewer runs, and dashboard opening when the Linux host has X11 display support; it exits with guidance to use the headless runner when `DISPLAY` or the X11 socket is unavailable. Inside either container, the repo is bind-mounted at `/workspace`, so normal host edits appear immediately inside Docker. Rebuild the image only when dependencies change: `docker/Dockerfile`, `requirements.txt`, apt packages, ROS packages, or system libraries.
 
 The Docker run scripts export `VENV=/usr`, so existing Make targets use the Python packages installed in the image instead of requiring a repo-local `.venv` inside the container. The normal host workflow still defaults to `.venv`.
 
@@ -70,14 +70,14 @@ ros2 --help
 scripts/check_ros_docker_env.sh
 make test
 make smoke
-make view-g1-oracle-follow SEED=123 ORACLE_FOLLOW_DURATION=5
+make report-milestone_5 SEED=123 MILESTONE_5_DURATION=5
 ```
 
 GUI examples from a GUI-capable shell:
 
 ```bash
 rviz2
-make milestone_4 SEED=123
+make milestone_5 SEED=123
 ```
 
 The run scripts mount the current repo into `/workspace`, use host networking, set `ROS_DOMAIN_ID`, and run as the host UID/GID where practical so generated files under `runs/`, `reports/`, `ros_ws/`, dashboards, videos, logs, and KPI outputs persist on the host without becoming root-owned. If a file does end up owned by root after manual Docker use, fix it from the host with:
@@ -98,6 +98,26 @@ True multi-platform manifests normally require `PUSH=1` and a registry image nam
 
 `requirements.txt` pins pytest below 9 because ROS 2 Humble's `launch_testing` pytest plugin is not compatible with pytest 9.
 
+### Storage Safety
+
+Large project outputs stay relative to the repository, including `runs/`, `.venv/`, `third_party/`, generated worlds, dashboards, logs, and videos. Put the checkout on the desired storage device and create an ignored machine-local policy file:
+
+```bash
+cp .env.storage.example .env.storage
+# Edit REQUIRED_STORAGE_MOUNT and EXPECTED_STORAGE_UUID for this machine.
+make storage-check
+```
+
+The check runs before environment setup, dependency fetches, Docker builds, tests, and milestone execution. On the host it verifies the required mount, repository, Docker root, and containerd root. In Docker it verifies that `/workspace` is a bind mount rather than the container writable layer.
+
+Docker Engine 29 keeps image layers in containerd separately from Docker's `data-root`. The guarded migration helper backs up configuration, performs conservative cleanup, quarantines old stores on the external filesystem, configures both roots, and restarts the services:
+
+```bash
+sudo scripts/migrate_system_storage.sh /path/to/external/mount FILESYSTEM_UUID
+```
+
+Run that command from a host terminal after leaving development containers. The script retains its timestamped quarantine until the rebuilt image and tests are verified.
+
 ## Milestone Commands
 
 ```bash
@@ -117,12 +137,16 @@ make view-world SEED=123
 make run SEED=123 DURATION=3
 make view-run SEED=123 DURATION=3
 make view SEED=123 VIEW_DURATION=30
-make g1-oracle-follow SEED=123
-make view-g1-oracle-follow SEED=123
 make milestone_4 SEED=123
 make view-milestone_4 SEED=123
 make milestone_4-wide SEED=123
 make view-milestone_4-wide SEED=123
+make milestone_5 SEED=123
+make view-milestone_5 SEED=123
+make report-milestone_5 SEED=123
+make g1-oracle-follow SEED=123             # compatibility alias for milestone_5
+make view-g1-oracle-follow SEED=123        # live-view compatibility alias
+make report-g1-oracle-follow SEED=123      # headless-report compatibility alias
 make g1-loco-sandbox POLICY=placeholder
 make fetch-lucky-g1-policy
 make g1-loco-sandbox POLICY=lucky_walker
@@ -132,21 +156,43 @@ make g1-loco-sandbox POLICY=unitree_rl_gym_g1
 make g1-loco-view POLICY=placeholder
 ```
 
-`make smoke` loads `configs/default.yaml`, prints a short environment/config summary, and writes `runs/visual/smoke_latest.html`. `make test` validates config loading, package imports, runner error handling, maze determinism/solvability, planner/controller behavior, and generated-world XML while writing `runs/visual/test_latest.txt` and `runs/visual/test_latest.html`. `make maze` prints a seeded ASCII maze with the BFS validation path overlaid and writes SVG/ASCII/PGM artifacts. `make world` builds a Lucky G1 MuJoCo maze world XML. `make run` opens a side-by-side visual dashboard first, then launches the live MuJoCo passive viewer in the generated maze world. `make view-run` runs headlessly and opens the same side-by-side dashboard with the final render. `make g1-oracle-follow` runs the turn-aware Lucky walker oracle follower. `make milestone_4` runs the earlier Lucky walking policy in explicit oracle mode through maze waypoints.
+`make smoke` loads `configs/default.yaml`, prints a short environment/config summary, and writes `runs/visual/smoke_latest.html`. `make test` validates config loading, package imports, runner error handling, maze determinism/solvability, planner/controller behavior, and generated-world XML while writing `runs/visual/test_latest.txt` and `runs/visual/test_latest.html`. `make maze` prints a seeded ASCII maze with the BFS validation path overlaid and writes SVG/ASCII/PGM artifacts. `make world` builds a Lucky G1 MuJoCo maze world XML. `make run` opens a side-by-side visual dashboard first, then launches the live MuJoCo passive viewer in the generated maze world. `make view-run` runs headlessly and opens the same side-by-side dashboard with the final render.
 
-## Turn-Aware G1 Oracle Follow
+## Milestone 4 — Oracle Path Planner
 
-This is the visual walking-policy oracle runner for debugging right turns before ROS 2/Nav2/SLAM are introduced. It uses heading-aware A*, inserts pre-turn and post-turn points, starts turns before corners, commands arc turns with forward velocity, and logs recovery attempts instead of silently switching to a proxy.
+Milestone 4 is planner-only. It uses the known generated maze grid in explicit oracle/debug mode, calculates a path from start to goal, converts path cells into world-frame waypoints, and saves visual artifacts. It does not command or simulate robot motion.
 
 ```bash
-make g1-oracle-follow SEED=123
-make view-g1-oracle-follow SEED=123
-make view-g1-oracle-follow SEED=123 CORRIDOR_WIDTH_M=2.0 ORACLE_FOLLOW_LABEL=wide
+make milestone_4 SEED=123
+make view-milestone_4 SEED=123
+make milestone_4-wide SEED=123
 ```
 
-`make g1-oracle-follow` opens the live MuJoCo viewer. `make view-g1-oracle-follow` runs headlessly and opens the dashboard. The default corridor width is `1.6 m`; use `CORRIDOR_WIDTH_M=1.0` through `2.0` to tune clearance.
-
 Artifacts are written under `runs/visual/`:
+
+```text
+runs/visual/milestone_4_seed-123_path.svg
+runs/visual/milestone_4_seed-123_path.txt
+runs/visual/milestone_4_seed-123_planner_summary.json
+```
+
+The summary explicitly records `robot_execution: false` and points to `make milestone_5` as the next step.
+
+## Milestone 5 — Oracle Path Execution
+
+Milestone 5 is the accepted oracle/debug physical-execution milestone. It takes the oracle plan and drives the Lucky G1 walking policy through the maze using the turn-aware waypoint follower and MuJoCo ground-truth pose. This is a development baseline, not sensor-based autonomy.
+
+The runner uses heading-aware A*, pre-turn and post-turn points, forward arc turns, bounded stuck recovery, and honest failure reporting. It never silently replaces the humanoid with a proxy body.
+
+```bash
+make milestone_5 SEED=123
+make view-milestone_5 SEED=123
+make report-milestone_5 SEED=123 MILESTONE_5_DURATION=18 CORRIDOR_WIDTH_M=2.0 MILESTONE_5_LABEL=rightturn
+```
+
+Both `make milestone_5` and `make view-milestone_5` open the live MuJoCo simulator. Use `make report-milestone_5` for a fast headless run that opens the HTML dashboard afterward. The older `g1-oracle-follow`, `view-g1-oracle-follow`, and `report-g1-oracle-follow` names remain as compatibility aliases.
+
+Milestone 5 artifacts are written under `runs/visual/`:
 
 ```text
 runs/visual/g1_oracle_follow_seed-123_dashboard.html
@@ -159,53 +205,7 @@ runs/visual/g1_oracle_follow_seed-123_final.png
 runs/visual/g1_oracle_follow_seed-123_policy_compatibility.json
 ```
 
-The dashboard shows planned path, actual trajectory, pre-turn points, left/right arc sections, final render, final status, current/final controller state, and event counts. The JSONL event log records state changes, turn starts, recovery starts/ends, and failure reasons.
-
-## Milestone 4 Oracle Walking
-
-Milestone 4 uses the known generated maze grid as an oracle planner, converts the path to world waypoints, and drives the Lucky G1 walker with conservative velocity commands. It does not use a mocap/proxy body.
-
-```bash
-make milestone_4 SEED=123
-make view-milestone_4 SEED=123
-make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=2.0 MILESTONE_4_LABEL=wide_test
-make view-milestone_4-wide SEED=123
-```
-
-`make milestone_4` opens the live MuJoCo viewer. `make view-milestone_4` runs headlessly and opens a dashboard. Both targets fetch/refresh the ignored Lucky checkout first. The waypoint controller uses arc turns: when the robot is misaligned, it crawls forward while yawing instead of trying to spin in place.
-
-The default corridor width is `1.6 m`. Override it per command from `1.0 m` to `2.0 m`:
-
-```bash
-make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=1.0 MILESTONE_4_LABEL=narrow
-make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=1.6
-make view-milestone_4 SEED=123 CORRIDOR_WIDTH_M=2.0 MILESTONE_4_LABEL=wide
-```
-
-Use the wide shortcut when you want the same maze topology at the maximum supported corridor width:
-
-```bash
-make milestone_4-wide SEED=123
-make view-milestone_4-wide SEED=123
-```
-
-The wide targets use `configs/lucky_wide_maze.yaml` and `WIDE_CORRIDOR_WIDTH_M=2.0`. Wide artifacts use a separate prefix such as `milestone_4_wide_seed-123_*`, so they can be compared against the default run.
-
-Artifacts are written under `runs/visual/`:
-
-```text
-runs/visual/milestone_4_seed-123_dashboard.html
-runs/visual/milestone_4_seed-123_summary.json
-runs/visual/milestone_4_seed-123_world.xml
-runs/visual/milestone_4_seed-123_path.svg
-runs/visual/milestone_4_seed-123_trajectory.csv
-runs/visual/milestone_4_seed-123_final.png
-runs/visual/milestone_4_seed-123_policy_compatibility.json
-```
-
-Milestone 4 summaries include `contact_summary`, and the trajectory CSV includes `contact_count`, `wall_contact_count`, and `wall_contact_pairs`. `wall_contact_count=0` means the robot did not touch any `maze_wall_*` geoms during sampled control ticks; nonzero entries name the wall and robot body/geom pair.
-
-This mode is honestly labeled oracle/debug: the planner uses the generated maze grid and the controller uses MuJoCo ground-truth base pose. If the walker falls, gets stuck, or times out, the summary reports that status instead of switching to a proxy fallback.
+The dashboard shows the planned path, actual trajectory, pre-turn points, left/right arc sections, final render, controller state, and event counts. The JSONL log records state changes, turns, recovery attempts, and failures. Reaching and following the oracle route is sufficient for this project's Milestone 5 acceptance.
 
 ## G1 Locomotion Policy Sandbox
 
@@ -387,4 +387,4 @@ The generated maze world is written under `runs/visual/` and uses the configured
 
 ## Next Milestone
 
-The next step after Milestone 4 is sensor simulation and timebase work. Keep the boundary clear: simulator ground truth may be used for debugging and evaluation, but final navigation should not secretly depend on privileged simulator state.
+The next step after the accepted Milestone 5 oracle-follow baseline is sensor simulation and timebase work. Keep the boundary clear: simulator ground truth may be used for debugging and evaluation, but final navigation should not secretly depend on privileged simulator state.
