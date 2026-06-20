@@ -1,4 +1,4 @@
-"""Reusable Lucky Walker start-to-goal motion session for ROS and scripted runs."""
+"""Reusable Unitree RL Gym native start-to-goal motion session for ROS and scripted runs."""
 
 from __future__ import annotations
 
@@ -52,7 +52,19 @@ def follower_config(config: dict) -> TurnAwareFollowerConfig:
 
 
 class OracleMotionSession:
-    def __init__(self, mujoco, model, data, config: dict, seed: int, lucky_repo: Path, model_xml: Path, duration_s: float, zero_command_timeout_s: float = 20.0) -> None:
+    def __init__(
+        self,
+        mujoco,
+        model,
+        data,
+        config: dict,
+        seed: int,
+        model_xml: Path,
+        duration_s: float,
+        zero_command_timeout_s: float = 20.0,
+        policy: str = "unitree_rl_gym_native",
+        unitree_rl_gym_repo: Path | None = None,
+    ) -> None:
         self.mujoco, self.model, self.data = mujoco, model, data
         self.config = config
         self.maze = generate_maze_from_config(config, seed)
@@ -63,12 +75,15 @@ class OracleMotionSession:
         )
         self.path = build_turn_aware_path(self.maze, plan.cells, follower_config(config))
         self.follower = TurnAwareOracleFollower(self.path, follower_config(config))
-        self.adapter = create_policy_adapter("lucky_walker", lucky_g1_repo=lucky_repo)
+        self.adapter = create_policy_adapter(
+            policy,
+            unitree_rl_gym_repo=unitree_rl_gym_repo,
+        )
         report = self.adapter.compatibility_report(model, model_xml)
         if report.errors:
             raise RuntimeError("; ".join(report.errors))
         start_x, start_y = cell_to_world_xy(self.maze, self.maze.spec.start_cell)
-        self.adapter.reset_at_pose(model, data, start_x, start_y, self.path.segments[0].target_heading_rad)
+        self._reset_policy_at_pose(model, data, start_x, start_y, self.path.segments[0].target_heading_rad)
         mujoco.mj_forward(model, data)
         self.sandbox = config_from_dict(config)
         self.control_dt = 1.0 / self.sandbox.control_rate_hz
@@ -82,6 +97,20 @@ class OracleMotionSession:
         self.zero_command_timeout_s = zero_command_timeout_s
         self.zero_command_since: float | None = None
         self.stop_reason = "running"
+        self.requires_substep_control = bool(getattr(self.adapter, "requires_substep_control", False))
+
+    def _reset_policy_at_pose(self, model, data, x: float, y: float, yaw: float) -> None:
+        reset_at_pose = getattr(self.adapter, "reset_at_pose", None)
+        if callable(reset_at_pose):
+            reset_at_pose(model, data, x, y, yaw)
+            return
+
+        self.adapter.reset(model, data)
+        base_height = float(self.config.get("robot", {}).get("initial_base_height_m", data.qpos[2]))
+        data.qpos[0] = x
+        data.qpos[1] = y
+        data.qpos[2] = base_height
+        data.qpos[3:7] = [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)]
 
     def step(self) -> None:
         if self.status != "RUNNING":
@@ -106,10 +135,13 @@ class OracleMotionSession:
         if fallen:
             command = VelocityCommand()
             self.data.ctrl[:] = 0.0
-        elif decision is None:
+        elif decision is None and not self.requires_substep_control:
             self.adapter.step(self.model, self.data, command, self.control_dt)
         self.last_command = command
+        substep_dt = float(self.model.opt.timestep)
         for _ in range(self.substeps):
+            if decision is None and self.requires_substep_control:
+                self.adapter.step(self.model, self.data, command, substep_dt)
             self.mujoco.mj_step(self.model, self.data)
         state = base_state(self.data)
         xy = (float(state["base_x"]), float(state["base_y"]))

@@ -1,4 +1,4 @@
-"""Run the turn-aware Lucky G1 oracle follower in a generated maze."""
+"""Run the turn-aware Unitree RL Gym native G1 oracle follower in a generated maze."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from pathlib import Path
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 
@@ -14,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from maze.generator import generate_maze_from_config
+from maze.grid import physical_cell_length_m, physical_cell_width_m
 from nav.controller import GOAL_REACHED as LEGACY_GOAL_REACHED, pose_from_base_state
 from nav.oracle_follow import (
     FAILED,
@@ -28,21 +30,21 @@ from sim.locomotion_policy_adapter import LocomotionPolicyError, VelocityCommand
 from sim.locomotion_sandbox import base_state, config_from_dict, determine_status, save_render
 from sim.mujoco_runner import MuJoCoImportError, MuJoCoModelError, import_mujoco
 from sim.world_builder import cell_to_world_xy
-from scripts.run_milestone_4 import (
-    _append_path_markers,
-    _apply_corridor_width_override,
-    _contact_summary,
-    _final_contact_summary,
-    _new_contact_stats,
-    _print_artifacts,
-    _update_contact_stats,
-    _world_with_topdown_path,
-    _world_with_xml_path,
+from scripts.oracle_run_artifacts import (
+    append_path_markers,
+    apply_cell_size_override,
+    contact_summary,
+    final_contact_summary,
+    new_contact_stats,
+    print_artifacts,
+    update_contact_stats,
+    world_with_topdown_path,
+    world_with_xml_path,
 )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Turn-aware Lucky G1 oracle follower.")
+    parser = argparse.ArgumentParser(description="Turn-aware Unitree RL Gym native G1 oracle follower.")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--duration", type=float, default=300.0)
     parser.add_argument("--viewer", action="store_true")
@@ -50,10 +52,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corridor-width-m", type=float, default=None)
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "default.yaml")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "runs" / "visual")
+    parser.add_argument("--locomotion-policy", default="unitree_rl_gym_native")
     parser.add_argument(
-        "--lucky-g1-repo",
+        "--unitree-rl-gym-repo",
         type=Path,
-        default=PROJECT_ROOT / "third_party" / "g1-manipulation-challenge",
+        default=PROJECT_ROOT / "third_party" / "unitree_rl_gym",
     )
     return parser.parse_args()
 
@@ -77,9 +80,9 @@ def main() -> int:
     started = time.time()
     summary: dict[str, object] = {
         "milestone": 5,
-        "mode": "milestone_5_oracle_path_execution",
+        "mode": "production_oracle_path_execution",
         "seed": args.seed,
-        "policy": "lucky_walker",
+        "policy": args.locomotion_policy,
         "final_status": "ERROR",
         "error": None,
         "failure_reason": None,
@@ -87,13 +90,15 @@ def main() -> int:
         "viewer_opened": False,
         "proxy_body_used": False,
         "contact_summary": {},
-        "rerun_live_command": f"make milestone_5 SEED={args.seed}",
-        "rerun_headless_command": f"make report-milestone_5 SEED={args.seed}",
+        "rerun_live_command": f"make oracle-view SEED={args.seed}",
+        "rerun_headless_command": f"make oracle SEED={args.seed}",
     }
 
     try:
         config = load_config(args.config)
-        corridor_width_m = _apply_corridor_width_override(config, args.corridor_width_m)
+        if args.locomotion_policy != "unitree_rl_gym_native":
+            raise ValueError(f"Production supports only unitree_rl_gym_native, got {args.locomotion_policy!r}.")
+        corridor_width_m = apply_cell_size_override(config, args.corridor_width_m)
         follower_config = _follower_config(config)
         maze = generate_maze_from_config(config, args.seed)
         oracle_values = config.get("oracle", {})
@@ -118,17 +123,17 @@ def main() -> int:
         mujoco = import_mujoco()
         model = mujoco.MjModel.from_xml_path(str(artifacts["world_xml"]))
         data = mujoco.MjData(model)
-        adapter = create_policy_adapter("lucky_walker", lucky_g1_repo=args.lucky_g1_repo)
+        adapter = create_policy_adapter(
+            args.locomotion_policy,
+            unitree_rl_gym_repo=args.unitree_rl_gym_repo,
+        )
         report = adapter.compatibility_report(model, artifacts["world_xml"])
         report.write_json(artifacts["compatibility_json"])
         if report.errors:
             raise LocomotionPolicyError("; ".join(report.errors))
 
         start_x, start_y = cell_to_world_xy(maze, maze.spec.start_cell)
-        reset_at_pose = getattr(adapter, "reset_at_pose", None)
-        if reset_at_pose is None:
-            raise LocomotionPolicyError("Lucky walker adapter does not support reset_at_pose.")
-        reset_at_pose(model, data, start_x, start_y, turn_path.segments[0].target_heading_rad)
+        _reset_policy_at_pose(adapter, model, data, config, start_x, start_y, turn_path.segments[0].target_heading_rad)
         mujoco.mj_forward(model, data)
 
         follower = TurnAwareOracleFollower(turn_path, follower_config)
@@ -191,13 +196,27 @@ def main() -> int:
         _write_json(artifacts["summary_json"], summary)
         _write_dashboard(artifacts["dashboard_html"], summary)
         print(f"G1 oracle follow failed: {exc}", file=sys.stderr)
-        _print_artifacts(summary, artifacts)
+        print_artifacts(summary, artifacts)
         return 1
 
     _write_json(artifacts["summary_json"], summary)
     _write_dashboard(artifacts["dashboard_html"], summary)
-    _print_artifacts(summary, artifacts)
+    print_artifacts(summary, artifacts)
     return 0
+
+
+def _reset_policy_at_pose(adapter, model, data, config: dict, x: float, y: float, yaw: float) -> None:
+    reset_at_pose = getattr(adapter, "reset_at_pose", None)
+    if callable(reset_at_pose):
+        reset_at_pose(model, data, x, y, yaw)
+        return
+
+    adapter.reset(model, data)
+    base_height = float(config.get("robot", {}).get("initial_base_height_m", data.qpos[2]))
+    data.qpos[0] = x
+    data.qpos[1] = y
+    data.qpos[2] = base_height
+    data.qpos[3:7] = [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)]
 
 
 def _build_world(config: dict, seed: int, output_dir: Path, world_xml: Path, topdown_overlay_svg: Path, maze, cells):
@@ -205,11 +224,11 @@ def _build_world(config: dict, seed: int, output_dir: Path, world_xml: Path, top
 
     world = build_maze_world(config, seed, output_dir)
     Path(world.model_xml_path).replace(world_xml)
-    world = _world_with_xml_path(world, world_xml)
-    _append_path_markers(world_xml, maze, cells)
+    world = world_with_xml_path(world, world_xml)
+    append_path_markers(world_xml, maze, cells)
     if Path(world.topdown_svg_path).exists():
         Path(world.topdown_svg_path).unlink()
-    return _world_with_topdown_path(world, topdown_overlay_svg)
+    return world_with_topdown_path(world, topdown_overlay_svg)
 
 
 def _run_follow(
@@ -233,7 +252,7 @@ def _run_follow(
     final_status = "TIMEOUT"
     viewer_opened = False
     actual_xy: list[tuple[float, float]] = []
-    contact_stats = _new_contact_stats()
+    contact_stats = new_contact_stats()
     event_counts: dict[str, int] = {}
 
     trajectory_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -299,6 +318,7 @@ def _run_follow(
             except Exception as exc:
                 raise LocomotionPolicyError(f"MuJoCo viewer is unavailable in this environment: {exc}") from exc
             with mujoco.viewer.launch_passive(model, data) as passive_viewer:
+                _show_maze_geoms_in_viewer(passive_viewer)
                 viewer_opened = True
                 while passive_viewer.is_running() and data.time < end_time:
                     final_status = _step_once(
@@ -335,11 +355,18 @@ def _run_follow(
         "final_segment_index": follower.segment_index,
         "recovery_attempts": follower.recovery_attempts,
         "event_counts": event_counts,
-        "contact_summary": _final_contact_summary(contact_stats),
+        "contact_summary": final_contact_summary(contact_stats),
         "final_pose": {"x": state["base_x"], "y": state["base_y"], "z": state["base_z"], "yaw": state["yaw"]},
         "sim_time_s": round(float(data.time), 6),
         "actual_xy": actual_xy,
     }
+
+
+def _show_maze_geoms_in_viewer(viewer) -> None:
+    # Maze floor/walls live in geom group 4 so the simulated Livox can raycast
+    # just the environment. MuJoCo's passive viewer hides that group by default.
+    if hasattr(viewer, "opt") and len(viewer.opt.geomgroup) > 4:
+        viewer.opt.geomgroup[4] = 1
 
 
 def _step_once(
@@ -361,8 +388,8 @@ def _step_once(
     state = base_state(data)
     output = follower.update(pose_from_base_state(state), float(data.time))
     command = output.command
-    contacts = _contact_summary(mujoco, model, data)
-    _update_contact_stats(contact_stats, data.time, contacts)
+    contacts = contact_summary(mujoco, model, data)
+    update_contact_stats(contact_stats, data.time, contacts)
     sim_status = determine_status(command, state, sandbox_config)
     final_status = output.state
     if sim_status == "fallen":
@@ -385,7 +412,8 @@ def _step_once(
         for event in output.events:
             _write_event(events_file, event_counts, event.to_dict())
 
-    if final_status not in (GOAL_REACHED, LEGACY_GOAL_REACHED, FAILED, "FALL_DETECTED"):
+    requires_substep = bool(getattr(adapter, "requires_substep_control", False))
+    if final_status not in (GOAL_REACHED, LEGACY_GOAL_REACHED, FAILED, "FALL_DETECTED") and not requires_substep:
         adapter.step(model, data, command, control_dt)
 
     command_writer.writerow(
@@ -399,7 +427,10 @@ def _step_once(
         }
     )
 
+    substep_dt = float(model.opt.timestep)
     for _ in range(sim_substeps):
+        if final_status not in (GOAL_REACHED, LEGACY_GOAL_REACHED, FAILED, "FALL_DETECTED") and requires_substep:
+            adapter.step(model, data, command, substep_dt)
         mujoco.mj_step(model, data)
 
     next_state = base_state(data)
@@ -470,8 +501,8 @@ def _write_overlay_svg(*, maze, path, actual_xy: list[tuple[float, float]], outp
     height = maze.spec.height_cells * cell_px
 
     def world_to_px(point: tuple[float, float]) -> tuple[float, float]:
-        col = point[0] / maze.spec.cell_size_m + (maze.spec.width_cells - 1) / 2.0
-        row = (maze.spec.height_cells - 1) / 2.0 - point[1] / maze.spec.cell_size_m
+        col = point[0] / physical_cell_width_m(maze.spec) + (maze.spec.width_cells - 1) / 2.0
+        row = (maze.spec.height_cells - 1) / 2.0 - point[1] / physical_cell_length_m(maze.spec)
         return col * cell_px + cell_px / 2.0, row * cell_px + cell_px / 2.0
 
     def polyline(points: list[tuple[float, float]], color: str, width_px: float) -> str:

@@ -1,293 +1,82 @@
-PYTHON_VERSION ?= 3.11.15
-PYENV_ROOT ?= $(HOME)/.pyenv
-PYENV ?= $(PYENV_ROOT)/bin/pyenv
-PYTHON ?= $(PYENV_ROOT)/versions/$(PYTHON_VERSION)/bin/python
+SHELL := /bin/bash
+
+CONFIG ?= configs/default.yaml
+SEED ?= 123
+CELL_SIZE_M ?= $(if $(CORRIDOR_WIDTH),$(CORRIDOR_WIDTH),4.0)
+CELL_SIZE_MIN ?= 1.0
+CELL_SIZE_MAX ?= 4.0
+RUN_ROOT ?= runs
+VISUAL_DIR ?= runs/visual
+ORACLE_DURATION ?= 300
+SLAM_DURATION ?= 300
+NAVIGATE_DURATION ?= 600
+ROS_BRIDGE_PORT ?= 8765
+ROS_DOMAIN_ID ?= 0
+DOCKER_IMAGE ?= robotics-maze-g1:production
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 VENV ?= .venv
 ifeq ($(VENV),/usr)
 VENV_PYTHON ?= /usr/bin/python3
 else
 VENV_PYTHON ?= $(VENV)/bin/python
 endif
-OPENSSL_ROOT ?= $(HOME)/.local/openssl
-SEED ?= 1
-DURATION ?= 3
-VIEW_DURATION ?= 30
-CONFIG ?= configs/default.yaml
-WIDE_CONFIG ?= configs/lucky_wide_maze.yaml
-VISUAL_DIR ?= runs/visual
-WORLD ?= maze
-MAZE_CELL_PX ?= 36
-PREVIEW_DURATION ?= 0.02
-RUN_RENDER_WIDTH ?= 640
-RUN_RENDER_HEIGHT ?= 480
-POLICY ?= placeholder
-G1_LOCO_DURATION ?= 3
-MILESTONE_4_DURATION ?= 300
-ORACLE_FOLLOW_DURATION ?= 300
-MILESTONE_5_DURATION ?= $(ORACLE_FOLLOW_DURATION)
-CORRIDOR_WIDTH_M ?= 1.6
-WIDE_CORRIDOR_WIDTH_M ?= 2.0
-MILESTONE_4_LABEL ?=
-ORACLE_FOLLOW_LABEL ?=
-MILESTONE_5_LABEL ?= $(ORACLE_FOLLOW_LABEL)
-THIRD_PARTY_DIR ?= third_party
-LUCKY_G1_REPO ?= $(THIRD_PARTY_DIR)/g1-manipulation-challenge
-UNITREE_RL_GYM_REPO ?= $(THIRD_PARTY_DIR)/unitree_rl_gym
-TORCH_CPU_INDEX ?= https://download.pytorch.org/whl/cpu
-DOCKER_IMAGE ?= robotics-maze-g1:humble
-DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
-ROS_DOMAIN_ID ?= 0
-ROS_BRIDGE_DURATION ?= 8
-ROS_BRIDGE_PORT ?= 8765
-D435I_SCAN_DURATION ?= 8
-SLAM_DURATION ?= 300
-SLAM_CORRIDOR_WIDTH_M ?= 2.0
-NAV2_SLAM_DURATION ?=
-NAV2_MAP_MAX_DURATION ?= $(if $(NAV2_SLAM_DURATION),$(NAV2_SLAM_DURATION),600)
-NAV2_EVAL_MAX_DURATION ?= $(if $(NAV2_SLAM_DURATION),$(NAV2_SLAM_DURATION),600)
-NAV2_ZERO_COMMAND_TIMEOUT ?= 20
+PYTHON_PACKAGE_DIR ?= $(PROJECT_TMP)/python-packages
 PROJECT_TMP ?= .tmp
+THIRD_PARTY_DIR ?= third_party
+UNITREE_RL_GYM_REPO ?= $(THIRD_PARTY_DIR)/unitree_rl_gym
+M_EXPLORE_REPO ?= $(THIRD_PARTY_DIR)/m-explore-ros2
+M_EXPLORE_URL ?= https://github.com/robo-friends/m-explore-ros2.git
+M_EXPLORE_COMMIT ?= 326cf8a0b487c34246bb8f3326afbcd69576dc60
+TORCH_CPU_INDEX ?= https://download.pytorch.org/whl/cpu
+TORCH_CPU_PACKAGE ?= torch==2.5.1+cpu
+NAVIGATE_SKIP_BUILD ?= false
+NAVIGATE_WITH_RVIZ ?= false
+NAVIGATE_WITH_MUJOCO ?= false
+SLAM_WITH_RVIZ ?= false
+
 export TMPDIR := $(abspath $(PROJECT_TMP))
 
 -include .env.storage
 export REQUIRED_STORAGE_MOUNT
 export EXPECTED_STORAGE_UUID
 
-.PHONY: d435i-visual-check ros-bridge-check ros-bridge-check-inner ros-bridge-view ros-bridge-view-inner d435i-scan-check d435i-scan-check-inner d435i-scan-view d435i-scan-view-inner slam-map slam-map-inner slam-map-view nav2-slam-demo nav2-slam-view nav2-slam-inner
-.PHONY: storage-check setup install-torch-cpu smoke view-smoke maze view-maze world view-world run view-run view fetch-lucky-g1-policy fetch-unitree-rl-gym-policy g1-loco-sandbox g1-loco-view locomotion-sandbox view-locomotion-sandbox milestone_4 view-milestone_4 milestone_4-wide view-milestone_4-wide milestone_5 view-milestone_5 report-milestone_5 g1-oracle-follow view-g1-oracle-follow report-g1-oracle-follow docker-build docker-run docker-run-gui docker-test docker-smoke docker-check-ros docker-milestone_4 docker-milestone_5 docker-build-multiarch test view-test clean
+.PHONY: help storage-check setup install-torch-cpu docker-build docker-run docker-run-gui docker-check-ros docker-build-multiarch
+.PHONY: fetch-unitree-rl-gym-policy fetch-m-explore prebuild prebuild-inner maze world oracle oracle-view oracle-inner slam slam-view slam-inner navigate navigate-view navigate-full-view navigate-inner bag-info clean
+
+help:
+	@printf '%s\n' \
+		'Production targets:' \
+		'  make docker-build' \
+		'  make docker-run                      # headless shell with ROS Humble' \
+		'  make docker-run-gui                  # GUI shell for RViz/MuJoCo viewer' \
+		'  make prebuild                        # fetch Unitree RL Gym + m-explore and build ROS workspace' \
+		'  make maze CELL_SIZE_M=4.0 SEED=123   # generate/validate square grid, 1-4 m cells' \
+		'  make world CELL_SIZE_M=4.0 SEED=123  # generate MuJoCo world with G1 + D435i + laser source' \
+		'  make oracle SEED=123                 # Unitree RL Gym native oracle path following' \
+		'  make oracle-view SEED=123            # oracle path following with MuJoCo viewer' \
+		'  make slam SEED=123                   # oracle-driven SLAM with rosbag' \
+		'  make slam-view SEED=123              # SLAM with RViz' \
+		'  make navigate SEED=123               # SLAM + m-explore + Nav2 + rosbag' \
+		'  make navigate-view SEED=123          # navigation with RViz' \
+		'  make navigate-full-view SEED=123     # navigation with RViz + MuJoCo viewer'
 
 storage-check:
 	scripts/check_storage_layout.sh
 
 setup: storage-check
-	@test -x "$(PYTHON)" || (echo "Python $(PYTHON_VERSION) was not found at $(PYTHON). Install it with: $(PYENV) install $(PYTHON_VERSION)" && exit 1)
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(PYTHON)" -m venv "$(VENV)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" -m pip install --upgrade pip
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" -m pip install -r requirements.txt
+	python3 -m venv "$(VENV)"
+	"$(VENV_PYTHON)" -m pip install --upgrade pip
+	"$(VENV_PYTHON)" -m pip install -r requirements.txt
 
 install-torch-cpu:
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" -m pip install "torch==2.12.0+cpu" --index-url "$(TORCH_CPU_INDEX)"
-
-smoke: storage-check
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/smoke_test.py --config "$(CONFIG)" --save-html "$(VISUAL_DIR)/smoke_latest.html"
-
-view-smoke:
-	@$(MAKE) smoke CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)"; status=$$?; if [ $$status -eq 0 ]; then LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/smoke_latest.html"; fi; exit $$status
-
-maze: storage-check
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/generate_maze.py --seed "$(SEED)" --config "$(CONFIG)" --show-path --save-ascii "$(VISUAL_DIR)/maze_seed-$(SEED).txt" --save-pgm "$(VISUAL_DIR)/maze_seed-$(SEED).pgm" --save-svg "$(VISUAL_DIR)/maze_seed-$(SEED).svg" --cell-px "$(MAZE_CELL_PX)"
-
-view-maze:
-	@$(MAKE) maze SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" MAZE_CELL_PX="$(MAZE_CELL_PX)"; status=$$?; if [ $$status -eq 0 ]; then LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/maze_seed-$(SEED).svg"; fi; exit $$status
-
-world: storage-check fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/generate_world.py --seed "$(SEED)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)"
-
-view-world:
-	@$(MAKE) world SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)"; status=$$?; if [ $$status -eq 0 ]; then LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/world_seed-$(SEED)_topdown.svg"; fi; exit $$status
-
-run: storage-check fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_episode.py --seed "$(SEED)" --duration "$(PREVIEW_DURATION)" --config "$(CONFIG)" --world "$(WORLD)" --world-output-dir "$(VISUAL_DIR)" --save-summary-json "$(VISUAL_DIR)/run_seed-$(SEED)_summary.json" --save-render "$(VISUAL_DIR)/run_seed-$(SEED)_preview.png" --render-width "$(RUN_RENDER_WIDTH)" --render-height "$(RUN_RENDER_HEIGHT)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/write_run_dashboard.py --seed "$(SEED)" --mode "$(WORLD)" --html "$(VISUAL_DIR)/run_seed-$(SEED)_dashboard.html" --topdown-svg "$(VISUAL_DIR)/world_seed-$(SEED)_topdown.svg" --render-image "$(VISUAL_DIR)/run_seed-$(SEED)_preview.png" --world-xml "$(VISUAL_DIR)/world_seed-$(SEED).xml" --world-summary "$(VISUAL_DIR)/world_seed-$(SEED)_summary.json" --run-summary "$(VISUAL_DIR)/run_seed-$(SEED)_summary.json"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/run_seed-$(SEED)_dashboard.html"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_episode.py --seed "$(SEED)" --duration "$(DURATION)" --config "$(CONFIG)" --world "$(WORLD)" --world-output-dir "$(VISUAL_DIR)" --viewer
-
-view-run: fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_episode.py --seed "$(SEED)" --duration "$(DURATION)" --config "$(CONFIG)" --world "$(WORLD)" --world-output-dir "$(VISUAL_DIR)" --save-summary-json "$(VISUAL_DIR)/run_seed-$(SEED)_summary.json" --save-render "$(VISUAL_DIR)/run_seed-$(SEED)_final.png" --render-width "$(RUN_RENDER_WIDTH)" --render-height "$(RUN_RENDER_HEIGHT)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/write_run_dashboard.py --seed "$(SEED)" --mode "$(WORLD)" --html "$(VISUAL_DIR)/run_seed-$(SEED)_dashboard.html" --topdown-svg "$(VISUAL_DIR)/world_seed-$(SEED)_topdown.svg" --render-image "$(VISUAL_DIR)/run_seed-$(SEED)_final.png" --world-xml "$(VISUAL_DIR)/world_seed-$(SEED).xml" --world-summary "$(VISUAL_DIR)/world_seed-$(SEED)_summary.json" --run-summary "$(VISUAL_DIR)/run_seed-$(SEED)_summary.json"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/run_seed-$(SEED)_dashboard.html"
-
-view: fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_episode.py --seed "$(SEED)" --duration "$(VIEW_DURATION)" --config "$(CONFIG)" --world "$(WORLD)" --world-output-dir "$(VISUAL_DIR)" --viewer
-
-d435i-visual-check: storage-check fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_d435i_visual_check.py --seed "$(SEED)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)"
-
-ros-bridge-check: storage-check
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) ros-bridge-check-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_DURATION="$(ROS_BRIDGE_DURATION)"; \
+	@if PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$$PYTHONPATH" "$(VENV_PYTHON)" -c "import torch" >/dev/null 2>&1; then \
+		echo "torch dependency ok"; \
+	elif [ "$(VENV)" = "/usr" ]; then \
+		mkdir -p "$(PYTHON_PACKAGE_DIR)"; \
+		"$(VENV_PYTHON)" -m pip install --target "$(PYTHON_PACKAGE_DIR)" "$(TORCH_CPU_PACKAGE)" --index-url "$(TORCH_CPU_INDEX)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make ros-bridge-check-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_DURATION="$(ROS_BRIDGE_DURATION)"; \
+		"$(VENV_PYTHON)" -m pip install "$(TORCH_CPU_PACKAGE)" --index-url "$(TORCH_CPU_INDEX)"; \
 	fi
-
-ros-bridge-check-inner: storage-check fetch-lucky-g1-policy
-	@test "$${ROS_DISTRO:-}" = "humble" || (echo "ros-bridge-check-inner requires ROS 2 Humble" && exit 1)
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge
-	@rm -f "$(VISUAL_DIR)/ros_bridge_seed-$(SEED)_summary.json"
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge ros_bridge_check.launch.py seed:="$(SEED)" config_path:="$(abspath $(CONFIG))" output_dir:="$(abspath $(VISUAL_DIR))" duration_s:="$(ROS_BRIDGE_DURATION)"
-	@"$(VENV_PYTHON)" -c 'import json; from pathlib import Path; p=Path("$(VISUAL_DIR)/ros_bridge_seed-$(SEED)_summary.json"); d=json.loads(p.read_text()); assert d["status"] == "completed", d'
-
-ros-bridge-view: storage-check
-	@echo "Open http://127.0.0.1:$(ROS_BRIDGE_PORT)/ros_bridge_live.html and press Ctrl-C here to stop."
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) ros-bridge-view-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)"; \
-	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make ros-bridge-view-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)"; \
-	fi
-
-ros-bridge-view-inner: storage-check fetch-lucky-g1-policy
-	@test "$${ROS_DISTRO:-}" = "humble" || (echo "ros-bridge-view-inner requires ROS 2 Humble" && exit 1)
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge ros_bridge_view.launch.py seed:="$(SEED)" config_path:="$(abspath $(CONFIG))" output_dir:="$(abspath $(VISUAL_DIR))" port:="$(ROS_BRIDGE_PORT)"
-
-d435i-scan-check: storage-check
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) d435i-scan-check-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" D435I_SCAN_DURATION="$(D435I_SCAN_DURATION)"; \
-	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make d435i-scan-check-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" D435I_SCAN_DURATION="$(D435I_SCAN_DURATION)"; \
-	fi
-
-d435i-scan-check-inner: storage-check fetch-lucky-g1-policy
-	@test "$${ROS_DISTRO:-}" = "humble" || (echo "d435i-scan-check-inner requires ROS 2 Humble" && exit 1)
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge
-	@rm -f "$(VISUAL_DIR)/d435i_scan_seed-$(SEED)_summary.json"
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge d435i_scan_check.launch.py seed:="$(SEED)" config_path:="$(abspath $(CONFIG))" output_dir:="$(abspath $(VISUAL_DIR))" duration_s:="$(D435I_SCAN_DURATION)"
-	@"$(VENV_PYTHON)" -c 'import json; from pathlib import Path; p=Path("$(VISUAL_DIR)/d435i_scan_seed-$(SEED)_summary.json"); d=json.loads(p.read_text()); assert d["status"] == "completed", d'
-
-d435i-scan-view: storage-check
-	@echo "RViz will open. Browser dashboard: http://127.0.0.1:$(ROS_BRIDGE_PORT)/ros_bridge_live.html"
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) d435i-scan-view-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)"; \
-	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make d435i-scan-view-inner SEED="$(SEED)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)"; \
-	fi
-
-d435i-scan-view-inner: storage-check fetch-lucky-g1-policy
-	@test "$${ROS_DISTRO:-}" = "humble" || (echo "d435i-scan-view-inner requires ROS 2 Humble" && exit 1)
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge d435i_scan_view.launch.py seed:="$(SEED)" config_path:="$(abspath $(CONFIG))" output_dir:="$(abspath $(VISUAL_DIR))" port:="$(ROS_BRIDGE_PORT)"
-
-slam-map: storage-check
-	@echo "Live mapping dashboard: http://127.0.0.1:$(ROS_BRIDGE_PORT)/ros_bridge_live.html"
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) slam-map-inner SEED="$(SEED)" SLAM_DURATION="$(SLAM_DURATION)" SLAM_CORRIDOR_WIDTH_M="$(SLAM_CORRIDOR_WIDTH_M)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" SLAM_WITH_RVIZ=false; \
-	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make slam-map-inner SEED="$(SEED)" SLAM_DURATION="$(SLAM_DURATION)" SLAM_CORRIDOR_WIDTH_M="$(SLAM_CORRIDOR_WIDTH_M)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" SLAM_WITH_RVIZ=false; \
-	fi
-
-slam-map-view: storage-check
-	@echo "RViz and live dashboard: http://127.0.0.1:$(ROS_BRIDGE_PORT)/ros_bridge_live.html"
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) slam-map-inner SEED="$(SEED)" SLAM_DURATION="$(SLAM_DURATION)" SLAM_CORRIDOR_WIDTH_M="$(SLAM_CORRIDOR_WIDTH_M)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" SLAM_WITH_RVIZ=true; \
-	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make slam-map-inner SEED="$(SEED)" SLAM_DURATION="$(SLAM_DURATION)" SLAM_CORRIDOR_WIDTH_M="$(SLAM_CORRIDOR_WIDTH_M)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" SLAM_WITH_RVIZ=true; \
-	fi
-
-slam-map-inner: storage-check fetch-lucky-g1-policy
-	@test "$${ROS_DISTRO:-}" = "humble" || (echo "slam-map-inner requires ROS 2 Humble" && exit 1)
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge
-	@rm -rf "$(VISUAL_DIR)/slam_seed-$(SEED)_bag"; rm -f "$(VISUAL_DIR)/slam_seed-$(SEED)_summary.json"
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge slam_map.launch.py seed:="$(SEED)" config_path:="$(abspath $(CONFIG))" output_dir:="$(abspath $(VISUAL_DIR))" duration_s:="$(SLAM_DURATION)" corridor_width_m:="$(SLAM_CORRIDOR_WIDTH_M)" lucky_g1_repo:="$(abspath $(LUCKY_G1_REPO))" bag_path:="$(abspath $(VISUAL_DIR))/slam_seed-$(SEED)_bag" port:="$(ROS_BRIDGE_PORT)" with_rviz:="$(SLAM_WITH_RVIZ)"
-	@"$(VENV_PYTHON)" -c 'import json; from pathlib import Path; p=Path("$(VISUAL_DIR)/slam_seed-$(SEED)_summary.json"); d=json.loads(p.read_text()); assert d["status"] == "completed", d'
-
-nav2-slam-demo: storage-check
-	@echo "Live Nav2 dashboard: http://127.0.0.1:$(ROS_BRIDGE_PORT)/ros_bridge_live.html"
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then $(MAKE) nav2-slam-inner SEED="$(SEED)" NAV2_MAP_MAX_DURATION="$(NAV2_MAP_MAX_DURATION)" NAV2_EVAL_MAX_DURATION="$(NAV2_EVAL_MAX_DURATION)" NAV2_ZERO_COMMAND_TIMEOUT="$(NAV2_ZERO_COMMAND_TIMEOUT)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" NAV2_WITH_RVIZ=false; else DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make nav2-slam-inner SEED="$(SEED)" NAV2_MAP_MAX_DURATION="$(NAV2_MAP_MAX_DURATION)" NAV2_EVAL_MAX_DURATION="$(NAV2_EVAL_MAX_DURATION)" NAV2_ZERO_COMMAND_TIMEOUT="$(NAV2_ZERO_COMMAND_TIMEOUT)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" NAV2_WITH_RVIZ=false; fi
-
-nav2-slam-view: storage-check
-	@echo "RViz and live Nav2 dashboard: http://127.0.0.1:$(ROS_BRIDGE_PORT)/ros_bridge_live.html"
-	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then $(MAKE) nav2-slam-inner SEED="$(SEED)" NAV2_MAP_MAX_DURATION="$(NAV2_MAP_MAX_DURATION)" NAV2_EVAL_MAX_DURATION="$(NAV2_EVAL_MAX_DURATION)" NAV2_ZERO_COMMAND_TIMEOUT="$(NAV2_ZERO_COMMAND_TIMEOUT)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" NAV2_WITH_RVIZ=true; else DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make nav2-slam-inner SEED="$(SEED)" NAV2_MAP_MAX_DURATION="$(NAV2_MAP_MAX_DURATION)" NAV2_EVAL_MAX_DURATION="$(NAV2_EVAL_MAX_DURATION)" NAV2_ZERO_COMMAND_TIMEOUT="$(NAV2_ZERO_COMMAND_TIMEOUT)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)" NAV2_WITH_RVIZ=true; fi
-
-nav2-slam-inner: storage-check fetch-lucky-g1-policy
-	@test "$${ROS_DISTRO:-}" = "humble" || (echo "nav2-slam-inner requires ROS 2 Humble" && exit 1)
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge g1_nav_bringup
-	@rm -rf "$(VISUAL_DIR)/slam_seed-$(SEED)_bag"; rm -f "$(VISUAL_DIR)/slam_seed-$(SEED)_summary.json" "$(VISUAL_DIR)/nav2_slam_seed-$(SEED)_summary.json"
-	@echo "Stage 1/2: oracle mapping to the final maze goal"
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge slam_map.launch.py seed:="$(SEED)" duration_s:="$(NAV2_MAP_MAX_DURATION)" output_dir:="$(abspath $(VISUAL_DIR))" config_path:="$(abspath $(CONFIG))" corridor_width_m:="$(SLAM_CORRIDOR_WIDTH_M)" lucky_g1_repo:="$(abspath $(LUCKY_G1_REPO))" bag_path:="$(abspath $(VISUAL_DIR))/slam_seed-$(SEED)_bag" port:="$(ROS_BRIDGE_PORT)" with_rviz:="$(NAV2_WITH_RVIZ)" zero_command_timeout_s:="$(NAV2_ZERO_COMMAND_TIMEOUT)"
-	@"$(VENV_PYTHON)" -c 'import json; from pathlib import Path; d=json.loads(Path("$(VISUAL_DIR)/slam_seed-$(SEED)_summary.json").read_text()); assert d["status"] == "completed", d; assert d["motion"]["status"] == "GOAL_REACHED", d["motion"]; assert Path("$(VISUAL_DIR)/slam_seed-$(SEED)_map_to_odom.json").is_file(); assert Path("$(VISUAL_DIR)/slam_seed-$(SEED)_map_to_odom_initial.json").is_file()'
-	@echo "Stage 2/2: saved-map Nav2 versus oracle shadow evaluation"
-	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_nav_bringup nav2_eval.launch.py seed:="$(SEED)" duration_s:="$(NAV2_EVAL_MAX_DURATION)" output_dir:="$(abspath $(VISUAL_DIR))" config_path:="$(abspath $(CONFIG))" corridor_width_m:="$(SLAM_CORRIDOR_WIDTH_M)" lucky_g1_repo:="$(abspath $(LUCKY_G1_REPO))" map_yaml:="$(abspath $(VISUAL_DIR))/slam_seed-$(SEED)_map.yaml" map_to_odom_path:="$(abspath $(VISUAL_DIR))/slam_seed-$(SEED)_map_to_odom_initial.json" goal_map_to_odom_path:="$(abspath $(VISUAL_DIR))/slam_seed-$(SEED)_map_to_odom.json" port:="$(ROS_BRIDGE_PORT)" with_rviz:="$(NAV2_WITH_RVIZ)" zero_command_timeout_s:="$(NAV2_ZERO_COMMAND_TIMEOUT)"
-	@"$(VENV_PYTHON)" -c 'import json; from pathlib import Path; d=json.loads(Path("$(VISUAL_DIR)/nav2_slam_seed-$(SEED)_summary.json").read_text()); assert d["status"] == "completed", d'
-
-fetch-lucky-g1-policy: storage-check
-	@mkdir -p "$(THIRD_PARTY_DIR)"
-	@if [ -d "$(LUCKY_G1_REPO)/.git" ]; then \
-		git -C "$(LUCKY_G1_REPO)" pull --ff-only; \
-	else \
-		git clone --depth 1 https://github.com/luckyrobots/g1-manipulation-challenge.git "$(LUCKY_G1_REPO)"; \
-	fi
-
-fetch-unitree-rl-gym-policy: storage-check
-	@mkdir -p "$(THIRD_PARTY_DIR)"
-	@if [ -d "$(UNITREE_RL_GYM_REPO)/.git" ]; then \
-		git -C "$(UNITREE_RL_GYM_REPO)" pull --ff-only; \
-	else \
-		git clone --depth 1 https://github.com/unitreerobotics/unitree_rl_gym.git "$(UNITREE_RL_GYM_REPO)"; \
-	fi
-
-g1-loco-sandbox: storage-check
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	@torch_dir=$$(dirname "$$(ls "$(VENV)"/lib/python*/site-packages/torch/lib/libgomp.so.1 2>/dev/null | head -1)"); \
-	torch_preload=""; if [ -f "$$torch_dir/libgomp.so.1" ] && [ -f "$$torch_dir/libc10.so" ]; then torch_preload="$$torch_dir/libgomp.so.1:$$torch_dir/libc10.so"; fi; \
-	LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/g1_loco_sandbox.py --policy "$(POLICY)" --duration "$(G1_LOCO_DURATION)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)" --lucky-g1-repo "$(LUCKY_G1_REPO)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)" --viewer
-
-g1-loco-view:
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	@torch_dir=$$(dirname "$$(ls "$(VENV)"/lib/python*/site-packages/torch/lib/libgomp.so.1 2>/dev/null | head -1)"); \
-	torch_preload=""; if [ -f "$$torch_dir/libgomp.so.1" ] && [ -f "$$torch_dir/libc10.so" ]; then torch_preload="$$torch_dir/libgomp.so.1:$$torch_dir/libc10.so"; fi; \
-	LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/g1_loco_sandbox.py --policy "$(POLICY)" --duration "$(G1_LOCO_DURATION)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)" --lucky-g1-repo "$(LUCKY_G1_REPO)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/g1_loco_latest_dashboard.html"
-
-locomotion-sandbox: g1-loco-sandbox
-
-view-locomotion-sandbox: g1-loco-view
-
-milestone_4: storage-check
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_milestone_4_planner.py --seed "$(SEED)" --corridor-width-m "$(CORRIDOR_WIDTH_M)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)" --label "$(MILESTONE_4_LABEL)"
-
-view-milestone_4:
-	@$(MAKE) milestone_4 SEED="$(SEED)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" MILESTONE_4_LABEL="$(MILESTONE_4_LABEL)"
-	@label_suffix=""; if [ -n "$(MILESTONE_4_LABEL)" ]; then label_suffix="_$(MILESTONE_4_LABEL)"; fi; LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/milestone_4$${label_suffix}_seed-$(SEED)_path.svg"
-
-milestone_4-wide: storage-check
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_milestone_4_planner.py --seed "$(SEED)" --corridor-width-m "$(WIDE_CORRIDOR_WIDTH_M)" --config "$(WIDE_CONFIG)" --output-dir "$(VISUAL_DIR)" --label wide
-
-view-milestone_4-wide:
-	@$(MAKE) milestone_4-wide SEED="$(SEED)" WIDE_CORRIDOR_WIDTH_M="$(WIDE_CORRIDOR_WIDTH_M)" WIDE_CONFIG="$(WIDE_CONFIG)" VISUAL_DIR="$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/milestone_4_wide_seed-$(SEED)_path.svg"
-
-milestone_5: storage-check fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_g1_oracle_follow.py --seed "$(SEED)" --duration "$(MILESTONE_5_DURATION)" --corridor-width-m "$(CORRIDOR_WIDTH_M)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)" --lucky-g1-repo "$(LUCKY_G1_REPO)" --label "$(MILESTONE_5_LABEL)" --viewer
-
-view-milestone_5:
-	@$(MAKE) milestone_5 SEED="$(SEED)" MILESTONE_5_DURATION="$(MILESTONE_5_DURATION)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" LUCKY_G1_REPO="$(LUCKY_G1_REPO)" MILESTONE_5_LABEL="$(MILESTONE_5_LABEL)"
-
-report-milestone_5: storage-check fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_g1_oracle_follow.py --seed "$(SEED)" --duration "$(MILESTONE_5_DURATION)" --corridor-width-m "$(CORRIDOR_WIDTH_M)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)" --lucky-g1-repo "$(LUCKY_G1_REPO)" --label "$(MILESTONE_5_LABEL)"
-	@label_suffix=""; if [ -n "$(MILESTONE_5_LABEL)" ]; then label_suffix="_$(MILESTONE_5_LABEL)"; fi; LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/g1_oracle_follow$${label_suffix}_seed-$(SEED)_dashboard.html"
-
-g1-oracle-follow:
-	@$(MAKE) milestone_5 SEED="$(SEED)" MILESTONE_5_DURATION="$(ORACLE_FOLLOW_DURATION)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" LUCKY_G1_REPO="$(LUCKY_G1_REPO)" MILESTONE_5_LABEL="$(ORACLE_FOLLOW_LABEL)"
-
-view-g1-oracle-follow:
-	@$(MAKE) view-milestone_5 SEED="$(SEED)" MILESTONE_5_DURATION="$(ORACLE_FOLLOW_DURATION)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" LUCKY_G1_REPO="$(LUCKY_G1_REPO)" MILESTONE_5_LABEL="$(ORACLE_FOLLOW_LABEL)"
-
-report-g1-oracle-follow:
-	@$(MAKE) report-milestone_5 SEED="$(SEED)" MILESTONE_5_DURATION="$(ORACLE_FOLLOW_DURATION)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" LUCKY_G1_REPO="$(LUCKY_G1_REPO)" MILESTONE_5_LABEL="$(ORACLE_FOLLOW_LABEL)"
 
 docker-build: storage-check
 	docker build -t "$(DOCKER_IMAGE)" -f docker/Dockerfile .
@@ -298,36 +87,133 @@ docker-run: storage-check
 docker-run-gui: storage-check
 	DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh
 
-docker-test: storage-check
-	DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make test
-
-docker-smoke: storage-check
-	DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make smoke
-
 docker-check-ros: storage-check
 	DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh scripts/check_ros_docker_env.sh
-
-docker-milestone_4: storage-check
-	DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make milestone_4 SEED="$(SEED)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)"
-
-docker-milestone_5: storage-check
-	@if [ -n "$$DISPLAY" ]; then \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make milestone_5 SEED="$(SEED)" MILESTONE_5_DURATION="$(MILESTONE_5_DURATION)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)"; \
-	else \
-		echo "DISPLAY is not set; running the Milestone 5 oracle follower headlessly."; \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make report-milestone_5 SEED="$(SEED)" MILESTONE_5_DURATION="$(MILESTONE_5_DURATION)" CORRIDOR_WIDTH_M="$(CORRIDOR_WIDTH_M)"; \
-	fi
 
 docker-build-multiarch: storage-check
 	DOCKER_IMAGE="$(DOCKER_IMAGE)" DOCKER_PLATFORMS="$(DOCKER_PLATFORMS)" docker/build_multiarch.sh
 
-test: storage-check fetch-lucky-g1-policy
-	@test -x "$(VENV_PYTHON)" || (echo "Missing $(VENV). Run: make setup" && exit 1)
-	@mkdir -p "$(VISUAL_DIR)"
-	LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/run_tests_report.py --text "$(VISUAL_DIR)/test_latest.txt" --html "$(VISUAL_DIR)/test_latest.html" tests
+fetch-unitree-rl-gym-policy: storage-check
+	@mkdir -p "$(THIRD_PARTY_DIR)"
+	@if [ -d "$(UNITREE_RL_GYM_REPO)/.git" ]; then \
+		git -C "$(UNITREE_RL_GYM_REPO)" pull --ff-only; \
+	else \
+		git clone --depth 1 https://github.com/unitreerobotics/unitree_rl_gym.git "$(UNITREE_RL_GYM_REPO)"; \
+	fi
 
-view-test:
-	@$(MAKE) test VISUAL_DIR="$(VISUAL_DIR)"; status=$$?; LD_LIBRARY_PATH="$(OPENSSL_ROOT)/lib:$$LD_LIBRARY_PATH" "$(VENV_PYTHON)" scripts/open_artifact.py "$(VISUAL_DIR)/test_latest.html" || true; exit $$status
+fetch-m-explore: storage-check
+	@mkdir -p "$(THIRD_PARTY_DIR)"
+	@if [ ! -d "$(M_EXPLORE_REPO)/.git" ]; then git clone --no-checkout "$(M_EXPLORE_URL)" "$(M_EXPLORE_REPO)"; fi
+	@if [ "$$(git -C "$(M_EXPLORE_REPO)" rev-parse HEAD 2>/dev/null || true)" != "$(M_EXPLORE_COMMIT)" ]; then \
+		git -C "$(M_EXPLORE_REPO)" fetch --depth 1 origin "$(M_EXPLORE_COMMIT)"; \
+		git -C "$(M_EXPLORE_REPO)" checkout --detach "$(M_EXPLORE_COMMIT)"; \
+	fi
+	@if git -C "$(M_EXPLORE_REPO)" apply --reverse --check "$(abspath patches/m-explore-ros2-humble-latest-tf.patch)" >/dev/null 2>&1; then :; else \
+		git -C "$(M_EXPLORE_REPO)" apply "$(abspath patches/m-explore-ros2-humble-latest-tf.patch)"; \
+	fi
+
+prebuild: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		$(MAKE) prebuild-inner; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make prebuild-inner; \
+	fi
+
+prebuild-inner: storage-check install-torch-cpu fetch-unitree-rl-gym-policy fetch-m-explore
+	@test "$${ROS_DISTRO:-}" = "humble" || (echo "prebuild-inner requires ROS 2 Humble" && exit 1)
+	@rm -rf ros_ws/build/explore_lite_msgs ros_ws/build/explore_lite ros_ws/build/g1_mujoco_bridge ros_ws/build/g1_nav_bringup \
+		ros_ws/install/explore_lite_msgs ros_ws/install/explore_lite ros_ws/install/g1_mujoco_bridge ros_ws/install/g1_nav_bringup
+	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src "$(M_EXPLORE_REPO)/explore" "$(M_EXPLORE_REPO)/explore_lite_msgs" --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select explore_lite_msgs explore_lite g1_mujoco_bridge g1_nav_bringup
+
+maze: storage-check
+	@mkdir -p "$(VISUAL_DIR)"
+	"$(VENV_PYTHON)" scripts/generate_maze.py --seed "$(SEED)" --config "$(CONFIG)" --cell-size-m "$(CELL_SIZE_M)" --show-path --save-ascii "$(VISUAL_DIR)/maze_seed-$(SEED).txt" --save-pgm "$(VISUAL_DIR)/maze_seed-$(SEED).pgm" --save-svg "$(VISUAL_DIR)/maze_seed-$(SEED).svg"
+
+world: storage-check fetch-unitree-rl-gym-policy
+	@mkdir -p "$(VISUAL_DIR)"
+	"$(VENV_PYTHON)" scripts/generate_world.py --seed "$(SEED)" --config "$(CONFIG)" --cell-size-m "$(CELL_SIZE_M)" --output-dir "$(VISUAL_DIR)"
+
+oracle: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ] || [ "$(VENV)" != ".venv" ]; then \
+		$(MAKE) oracle-inner ORACLE_VIEWER=false; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make oracle-inner ORACLE_VIEWER=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" ORACLE_DURATION="$(ORACLE_DURATION)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)"; \
+	fi
+
+oracle-view: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ] || [ "$(VENV)" != ".venv" ]; then \
+		$(MAKE) oracle-inner ORACLE_VIEWER=true; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make oracle-inner ORACLE_VIEWER=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" ORACLE_DURATION="$(ORACLE_DURATION)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)"; \
+	fi
+
+oracle-inner: storage-check install-torch-cpu fetch-unitree-rl-gym-policy
+	@mkdir -p "$(VISUAL_DIR)"
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/run_g1_oracle_follow.py --seed "$(SEED)" --duration "$(ORACLE_DURATION)" --corridor-width-m "$(CELL_SIZE_M)" --config "$(CONFIG)" --output-dir "$(VISUAL_DIR)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)" --locomotion-policy unitree_rl_gym_native $(if $(filter true,$(ORACLE_VIEWER)),--viewer,)
+
+slam: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		$(MAKE) slam-inner SLAM_WITH_RVIZ=false; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make slam-inner SLAM_WITH_RVIZ=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" SLAM_DURATION="$(SLAM_DURATION)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)"; \
+	fi
+
+slam-view: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		$(MAKE) slam-inner SLAM_WITH_RVIZ=true; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make slam-inner SLAM_WITH_RVIZ=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" SLAM_DURATION="$(SLAM_DURATION)" CONFIG="$(CONFIG)" VISUAL_DIR="$(VISUAL_DIR)" ROS_BRIDGE_PORT="$(ROS_BRIDGE_PORT)"; \
+	fi
+
+slam-inner: storage-check install-torch-cpu fetch-unitree-rl-gym-policy
+	@test "$${ROS_DISTRO:-}" = "humble" || (echo "slam-inner requires ROS 2 Humble" && exit 1)
+	@rm -rf ros_ws/build/g1_mujoco_bridge ros_ws/install/g1_mujoco_bridge
+	PYTHONPATH="$(CURDIR):$$PYTHONPATH" colcon --log-base ros_ws/log build --base-paths ros_ws/src --build-base ros_ws/build --install-base ros_ws/install --symlink-install --packages-select g1_mujoco_bridge
+	@rm -rf "$(VISUAL_DIR)/slam_seed-$(SEED)_bag"; rm -f "$(VISUAL_DIR)/slam_seed-$(SEED)_summary.json"
+	@. ros_ws/install/setup.sh; PYTHONPATH="$(CURDIR):$$PYTHONPATH" ros2 launch g1_mujoco_bridge slam_map.launch.py seed:="$(SEED)" config_path:="$(abspath $(CONFIG))" output_dir:="$(abspath $(VISUAL_DIR))" duration_s:="$(SLAM_DURATION)" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native bag_path:="$(abspath $(VISUAL_DIR))/slam_seed-$(SEED)_bag" port:="$(ROS_BRIDGE_PORT)" with_rviz:="$(SLAM_WITH_RVIZ)"
+
+navigate: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)"; \
+	fi
+
+navigate-view: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)"; \
+	fi
+
+navigate-full-view: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)"; \
+	fi
+
+navigate-inner: storage-check
+	@test "$${ROS_DISTRO:-}" = "humble" || (echo "navigate-inner requires ROS 2 Humble" && exit 1)
+	@run_dir=$$(python3 scripts/create_run_context.py --command navigate --seed "$(SEED)" --root "$(RUN_ROOT)" --config "$(CONFIG)" --parameter cell_size="$(CELL_SIZE_M)m" --parameter duration="$(NAVIGATE_DURATION)s"); \
+	echo "Run directory: $$run_dir"; \
+	$(MAKE) prebuild-inner NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)"; \
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/characterize_nav_locomotion.py --output-dir "$$run_dir" --config "$(CONFIG)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)"; \
+	PYTHONPATH="$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/render_navigation_config.py --config "$(CONFIG)" --nav2-template ros_ws/src/g1_nav_bringup/config/nav2_exploration_params.yaml --calibration "$$run_dir/locomotion_calibration.json" --output-dir "$$run_dir"; \
+	. ros_ws/install/setup.sh; \
+	torch_dir=$$(dirname "$$(ls "$(VENV)"/lib/python*/site-packages/torch/lib/libgomp.so.1 2>/dev/null | head -1)"); \
+	torch_preload=""; if [ -f "$$torch_dir/libgomp.so.1" ] && [ -f "$$torch_dir/libc10.so" ]; then torch_preload="$$torch_dir/libgomp.so.1:$$torch_dir/libc10.so"; fi; \
+	bag_path="$(abspath .)/$$run_dir/rosbag"; bag_log="$(abspath .)/$$run_dir/rosbag-record.log"; \
+	echo "Recording all ROS topics: $$bag_path"; \
+	ros2 bag record --all --include-hidden-topics --output "$$bag_path" >"$$bag_log" 2>&1 & bag_pid=$$!; \
+	cleanup_bag() { if [ -n "$$bag_pid" ] && kill -0 "$$bag_pid" 2>/dev/null; then kill -INT "$$bag_pid"; wait "$$bag_pid" || true; fi; bag_pid=""; }; \
+	trap cleanup_bag EXIT INT TERM; \
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)"; \
+	status=$$?; cleanup_bag; trap - EXIT INT TERM; python3 scripts/finalize_run_context.py "$$run_dir"; echo "Report: $$run_dir/dashboard.html"; exit $$status
+
+bag-info:
+	@test -n "$(BAG)" || (echo "Usage: make bag-info BAG=runs/.../rosbag" && exit 1)
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then ros2 bag info "$(BAG)"; else DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh ros2 bag info "$(BAG)"; fi
 
 clean:
-	rm -rf .pytest_cache
+	rm -rf ros_ws/build ros_ws/install ros_ws/log

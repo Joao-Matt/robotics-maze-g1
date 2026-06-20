@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from maze.grid import FREE, Maze, Cell, is_inside, neighbors_4
+from maze.grid import FREE, Maze, Cell, is_inside, neighbors_4, physical_cell_width_m, physical_cell_length_m
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ def validate_maze(
     min_path_cells: int = 4,
     safety_radius_m: float | None = None,
     min_corridor_width_m: float | None = None,
+    max_corridor_width_m: float | None = None,
 ) -> ValidationResult:
     """Validate maze dimensions, endpoints, physical width, and BFS solvability."""
     errors: list[str] = []
@@ -40,18 +41,26 @@ def validate_maze(
     elif not np.isin(maze.grid, [0, 1]).all():
         errors.append("Grid must contain only 0/free and 1/wall values.")
 
-    if maze.spec.cell_size_m <= 0:
-        errors.append("cell_size_m must be positive.")
+    corridor_width = physical_cell_width_m(maze.spec)
+    cell_length = physical_cell_length_m(maze.spec)
+    if maze.spec.cell_size_m <= 0 or corridor_width <= 0 or cell_length <= 0:
+        errors.append("cell dimensions must be positive.")
 
-    if min_corridor_width_m is not None and maze.spec.cell_size_m < min_corridor_width_m:
+    if min_corridor_width_m is not None and corridor_width < min_corridor_width_m:
         errors.append(
-            f"cell_size_m={maze.spec.cell_size_m} is narrower than "
+            f"cell_width_m={corridor_width} is narrower than "
             f"min_corridor_width_m={min_corridor_width_m}."
         )
 
-    if safety_radius_m is not None and maze.spec.cell_size_m < 2.0 * safety_radius_m:
+    if max_corridor_width_m is not None and corridor_width > max_corridor_width_m:
         errors.append(
-            f"cell_size_m={maze.spec.cell_size_m} is narrower than "
+            f"cell_width_m={corridor_width} is wider than "
+            f"max_corridor_width_m={max_corridor_width_m}."
+        )
+
+    if safety_radius_m is not None and corridor_width < 2.0 * safety_radius_m:
+        errors.append(
+            f"cell_width_m={corridor_width} is narrower than "
             f"2 * safety_radius_m={2.0 * safety_radius_m}."
         )
 

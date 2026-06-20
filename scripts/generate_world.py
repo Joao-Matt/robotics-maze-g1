@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "runs" / "visual",
         help="Directory for generated XML and visual artifacts.",
     )
+    parser.add_argument("--cell-size-m", type=float, default=None, help="Override square maze cell size in meters.")
     return parser.parse_args()
 
 
@@ -38,6 +39,12 @@ def main() -> int:
 
     try:
         config = load_config(args.config)
+        if args.cell_size_m is not None:
+            if args.cell_size_m < 1.0 or args.cell_size_m > 4.0:
+                raise ValueError(f"cell size must be between 1.0 and 4.0 meters, got {args.cell_size_m:.3g}")
+            config["maze"]["cell_size_m"] = float(args.cell_size_m)
+            config["maze"]["cell_width_m"] = float(args.cell_size_m)
+            config["maze"]["cell_length_m"] = float(args.cell_size_m)
         result = build_maze_world(config, args.seed, args.output_dir)
     except (ConfigError, FileNotFoundError, KeyError, ValueError) as exc:
         print(f"World generation failed: {exc}", file=sys.stderr)

@@ -8,20 +8,23 @@ sim:
   max_episode_time_s: 180
 
 maze:
-  cell_size_m: 1.6
+  # Square physical maze cells. Sweep cell_size_m/cell_width_m/cell_length_m
+  # together from 1 m to 4 m.
+  cell_size_m: 4.0
+  cell_width_m: 4.0
+  cell_length_m: 4.0
   width_cells: 15
   height_cells: 15
   wall_height_m: 1.2
   wall_thickness_m: 0.12
   min_corridor_width_m: 1.0
+  max_corridor_width_m: 4.0
 
 robot:
-  model_xml_path: third_party/g1-manipulation-challenge/scene.xml
-  base_model_xml_path: third_party/g1-manipulation-challenge/g1.xml
-  legacy_menagerie_model_xml_path: assets/mujoco_menagerie/unitree_g1/scene.xml
-  legacy_menagerie_base_model_xml_path: assets/mujoco_menagerie/unitree_g1/g1.xml
+  model_xml_path: third_party/unitree_rl_gym/resources/robots/g1_description/scene.xml
+  base_model_xml_path: third_party/unitree_rl_gym/resources/robots/g1_description/g1_12dof.xml
   initial_keyframe:
-  initial_base_height_m: 0.76
+  initial_base_height_m: 0.793
   safety_radius_m: 0.45
   goal_tolerance_m: 0.5
   max_forward_speed_mps: 0.75
@@ -29,7 +32,7 @@ robot:
 
 d435i:
   enabled: true
-  parent_body: torso_link_rev_1_0
+  parent_body: pelvis
   link_name: d435i_link
   rgb_camera_name: d435i_rgb
   depth_camera_name: d435i_depth
@@ -44,6 +47,15 @@ d435i:
   depth_fovy_deg: 58.0
   depth_visual_min_m: 0.15
   depth_visual_max_m: 8.0
+
+livox_mid360:
+  enabled: true
+  frame_id: livox_mid360_frame
+  mount_pos_m: [0.05, 0.0, 0.29]
+  scan_rate_hz: 10.0
+  horizontal_bins: 720
+  range_min_m: 0.10
+  range_max_m: 40.0
 
 oracle:
   planner: bfs
@@ -82,3 +94,34 @@ locomotion_sandbox:
   fall_max_tilt_rad: 0.9
   recording_fps: 30
   command_step_fraction: 0.2
+
+nav2_navigation:
+  locomotion_policy: unitree_rl_gym_native
+  # Fixed spawn fixture orientation; never inferred from the generated route.
+  initial_spawn_yaw_rad: -1.5707963267948966
+  # These limits are rendered into Nav2. Commands are not reshaped afterward.
+  max_forward_mps: 0.30
+  min_forward_mps: 0.10
+  max_reverse_mps: -0.30
+  max_yaw_rate_radps: 1.00
+  min_yaw_rate_radps: 0.00
+  turn_slowdown_start_radps: 0.25
+  turn_slowdown_full_radps: 0.65
+  turn_slowdown_min_forward_mps: 0.05
+  max_linear_accel_mps2: 4.00
+  max_linear_decel_mps2: 4.00
+  max_yaw_accel_radps2: 1.00
+  max_yaw_decel_radps2: 1.20
+  costmap_resolution_m: 0.05
+  costmap_robot_radius_m: 0.60
+  inflation_radius_m: 1.35
+  inflation_cost_scaling: 0.80
+  obstacle_critic_scale: 8.00
+  path_align_scale: 10.0
+  goal_align_scale: 8.0
+  path_dist_scale: 12.0
+  goal_dist_scale: 10.0
+  command_timeout_s: 0.50
+  wall_contact_abort_s: 0.50
+  stuck_timeout_s: 12.0
+  stuck_min_progress_m: 0.08

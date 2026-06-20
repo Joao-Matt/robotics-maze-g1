@@ -39,7 +39,7 @@ class D435iSpec:
             raise ValueError("d435i.mount_pos_m must contain exactly three numbers")
 
         spec = cls(
-            parent_body=str(raw.get("parent_body", "torso_link_rev_1_0")),
+            parent_body=str(raw.get("parent_body", "pelvis")),
             link_name=str(raw.get("link_name", "d435i_link")),
             rgb_camera_name=str(raw.get("rgb_camera_name", "d435i_rgb")),
             depth_camera_name=str(raw.get("depth_camera_name", "d435i_depth")),

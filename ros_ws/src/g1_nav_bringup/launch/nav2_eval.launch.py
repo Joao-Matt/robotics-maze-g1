@@ -14,7 +14,8 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     seed, duration = LaunchConfiguration("seed"), LaunchConfiguration("duration_s")
     output, config, port = LaunchConfiguration("output_dir"), LaunchConfiguration("config_path"), LaunchConfiguration("port")
-    rviz_enabled, lucky = LaunchConfiguration("with_rviz"), LaunchConfiguration("lucky_g1_repo")
+    rviz_enabled = LaunchConfiguration("with_rviz")
+    policy, unitree_repo = LaunchConfiguration("locomotion_policy"), LaunchConfiguration("unitree_rl_gym_repo")
     map_yaml, map_tf = LaunchConfiguration("map_yaml"), LaunchConfiguration("map_to_odom_path")
     goal_tf = LaunchConfiguration("goal_map_to_odom_path")
     zero_timeout, corridor = LaunchConfiguration("zero_command_timeout_s"), LaunchConfiguration("corridor_width_m")
@@ -25,7 +26,8 @@ def generate_launch_description():
         parameters=[PathJoinSubstitution([bridge_share,"config","bridge.yaml"]), common, {
             "config_path": ParameterValue(config,value_type=str), "motion_mode":"oracle_mapping",
             "motion_duration_s": ParameterValue(duration,value_type=float), "zero_command_timeout_s": ParameterValue(zero_timeout,value_type=float),
-            "corridor_width_m": ParameterValue(corridor,value_type=float), "lucky_g1_repo": ParameterValue(lucky,value_type=str),
+            "corridor_width_m": ParameterValue(corridor,value_type=float),
+            "unitree_rl_gym_repo": ParameterValue(unitree_repo,value_type=str), "locomotion_policy": ParameterValue(policy,value_type=str),
             "publish_map_to_odom":False, "live_visual_dir":ParameterValue(live,value_type=str), "focused_nav_visuals":True}])
     scan = Node(package="depthimage_to_laserscan", executable="depthimage_to_laserscan_node", name="depthimage_to_laserscan",
         parameters=[PathJoinSubstitution([bridge_share,"config","d435i_depth_to_scan.yaml"])],
@@ -53,7 +55,8 @@ def generate_launch_description():
         DeclareLaunchArgument("seed",default_value="123"),DeclareLaunchArgument("duration_s",default_value="600"),
         DeclareLaunchArgument("output_dir",default_value="/workspace/runs/visual"),DeclareLaunchArgument("config_path",default_value="/workspace/configs/default.yaml"),
         DeclareLaunchArgument("port",default_value="8765"),DeclareLaunchArgument("with_rviz",default_value="false"),
-        DeclareLaunchArgument("lucky_g1_repo",default_value="/workspace/third_party/g1-manipulation-challenge"),
+        DeclareLaunchArgument("unitree_rl_gym_repo",default_value="/workspace/third_party/unitree_rl_gym"),
+        DeclareLaunchArgument("locomotion_policy",default_value="unitree_rl_gym_native"),
         DeclareLaunchArgument("map_yaml"),DeclareLaunchArgument("map_to_odom_path"),DeclareLaunchArgument("goal_map_to_odom_path"),DeclareLaunchArgument("zero_command_timeout_s",default_value="20"),
         DeclareLaunchArgument("corridor_width_m",default_value="2.0"),LogInfo(msg=["Stage 2 live evaluation: http://127.0.0.1:",port,"/ros_bridge_live.html"]),
         bridge,scan,saved_tf,map_server,*nav_nodes,probe,web,rviz,shutdown])

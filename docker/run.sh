@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE_NAME="${IMAGE_NAME:-${DOCKER_IMAGE:-robotics-maze-g1:humble}}"
+IMAGE_NAME="${IMAGE_NAME:-${DOCKER_IMAGE:-robotics-maze-g1:production}}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 CONTAINER_HOME="${CONTAINER_HOME:-/tmp}"
 CONTAINER_VENV="${CONTAINER_VENV:-/usr}"

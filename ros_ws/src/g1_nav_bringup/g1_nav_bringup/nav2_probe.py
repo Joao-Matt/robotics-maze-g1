@@ -23,7 +23,7 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from maze.generator import generate_maze_from_config
-from maze.grid import FREE, WALL
+from maze.grid import FREE, WALL, physical_cell_length_m, physical_cell_width_m
 from nav.planner import plan_oracle_path
 from sim.config import load_config
 from sim.mujoco_runner import _write_png
@@ -86,7 +86,10 @@ class Probe(Node):
         self.out = Path(str(self.get_parameter("output_dir").value)); self.out.mkdir(parents=True, exist_ok=True)
         live = str(self.get_parameter("live_visual_dir").value); self.live = Path(live) if live else None
         self.config = load_config(str(self.get_parameter("config_path").value))
-        self.config["maze"]["cell_size_m"] = float(self.get_parameter("corridor_width_m").value)
+        corridor_width = float(self.get_parameter("corridor_width_m").value)
+        self.config["maze"]["cell_size_m"] = corridor_width
+        self.config["maze"]["cell_width_m"] = corridor_width
+        self.config["maze"]["cell_length_m"] = corridor_width
         self.maze = generate_maze_from_config(self.config, self.seed)
         self.oracle_plan = plan_oracle_path(self.maze, safety_radius_m=float(self.config["robot"]["safety_radius_m"]), simplify=False)
         self.oracle_points = [cell_to_world_xy(self.maze, cell) for cell in self.oracle_plan.cells]
@@ -204,12 +207,13 @@ class Probe(Node):
         latest_map = self.plans[-1][1] if self.plans else []
         latest = [self._map_to_world(point) for point in latest_map]
         valid = [] ; clearances = []
-        cell = self.maze.spec.cell_size_m
+        cell_width = physical_cell_width_m(self.maze.spec)
+        cell_length = physical_cell_length_m(self.maze.spec)
         wall_centers = [cell_to_world_xy(self.maze, (r, c)) for r in range(self.maze.spec.height_cells) for c in range(self.maze.spec.width_cells) if self.maze.grid[r, c] == WALL]
         for x, y in latest:
-            col = round(x / cell + (self.maze.spec.width_cells - 1) / 2); row = round((self.maze.spec.height_cells - 1) / 2 - y / cell)
+            col = round(x / cell_width + (self.maze.spec.width_cells - 1) / 2); row = round((self.maze.spec.height_cells - 1) / 2 - y / cell_length)
             valid.append(0 <= row < self.maze.spec.height_cells and 0 <= col < self.maze.spec.width_cells and self.maze.grid[row, col] == FREE)
-            clearances.append(min((math.hypot(x-wx, y-wy) - cell / 2 for wx, wy in wall_centers), default=0.0))
+            clearances.append(min((math.hypot(x-wx, y-wy) - min(cell_width, cell_length) / 2 for wx, wy in wall_centers), default=0.0))
         lengths = [_length([self._map_to_world(p) for p in points]) for _, points in self.plans]
         goal_error = math.hypot(latest[-1][0] - self.oracle_points[-1][0], latest[-1][1] - self.oracle_points[-1][1]) if latest else None
         return {"nav2_path_length_m": _length(latest), "oracle_path_length_m": _length(self.oracle_points),
@@ -220,8 +224,9 @@ class Probe(Node):
                 "goal_endpoint_error_m": goal_error}, latest
 
     def _trajectory_svg(self, path, nav_points):
-        size, cell = 720, self.maze.spec.cell_size_m; width = self.maze.spec.width_cells; height = self.maze.spec.height_cells
-        def pixel(point): return ((point[0] / cell + (width - 1) / 2 + .5) * size / width, ((height - 1) / 2 - point[1] / cell + .5) * size / height)
+        size = 720; width = self.maze.spec.width_cells; height = self.maze.spec.height_cells
+        cell_width = physical_cell_width_m(self.maze.spec); cell_length = physical_cell_length_m(self.maze.spec)
+        def pixel(point): return ((point[0] / cell_width + (width - 1) / 2 + .5) * size / width, ((height - 1) / 2 - point[1] / cell_length + .5) * size / height)
         def line(points): return " ".join(f"{x:.1f},{y:.1f}" for x, y in map(pixel, points))
         walls = "".join(f'<rect x="{c*size/width:.1f}" y="{r*size/height:.1f}" width="{size/width:.1f}" height="{size/height:.1f}" fill="#111827"/>' for r in range(height) for c in range(width) if self.maze.grid[r,c] == WALL)
         actual = [(x, y) for _, x, y in self.actual]
@@ -235,8 +240,9 @@ class Probe(Node):
             grid_row = info.height - 1 - display_row
             for col in range(info.width):
                 map_point = (info.origin.position.x + (col + .5) * info.resolution, info.origin.position.y + (grid_row + .5) * info.resolution)
-                x, y = self._map_to_world(map_point); cell = self.maze.spec.cell_size_m
-                maze_col = round(x / cell + (self.maze.spec.width_cells - 1) / 2); maze_row = round((self.maze.spec.height_cells - 1) / 2 - y / cell)
+                x, y = self._map_to_world(map_point)
+                cell_width = physical_cell_width_m(self.maze.spec); cell_length = physical_cell_length_m(self.maze.spec)
+                maze_col = round(x / cell_width + (self.maze.spec.width_cells - 1) / 2); maze_row = round((self.maze.spec.height_cells - 1) / 2 - y / cell_length)
                 if 0 <= maze_row < self.maze.spec.height_cells and 0 <= maze_col < self.maze.spec.width_cells:
                     truth[display_row, col] = 0 if self.maze.grid[maze_row, maze_col] == WALL else 254
         gap = np.full((slam.shape[0], 12, 3), 100, np.uint8); self._png(path, np.concatenate([slam, gap, truth], axis=1))

@@ -18,7 +18,7 @@ from std_msgs.msg import String
 from tf2_msgs.msg import TFMessage
 
 from maze.generator import generate_maze_from_config
-from maze.grid import WALL
+from maze.grid import WALL, physical_cell_length_m, physical_cell_width_m
 from sim.config import load_config
 from sim.mujoco_runner import _write_png
 
@@ -41,7 +41,10 @@ class SlamArtifactCollector(Node):
         if self.live_dir:
             self.live_dir.mkdir(parents=True, exist_ok=True)
         config = load_config(str(self.get_parameter("config_path").value))
-        config["maze"]["cell_size_m"] = float(self.get_parameter("corridor_width_m").value)
+        corridor_width = float(self.get_parameter("corridor_width_m").value)
+        config["maze"]["cell_size_m"] = corridor_width
+        config["maze"]["cell_width_m"] = corridor_width
+        config["maze"]["cell_length_m"] = corridor_width
         self.truth_maze = generate_maze_from_config(config, self.seed)
         self.latest_map = None
         self.map_count = 0
@@ -159,12 +162,13 @@ class SlamArtifactCollector(Node):
         grid = np.asarray(message.data, dtype=np.int16).reshape(message.info.height, message.info.width)
         occupied_rows, occupied_cols = np.where(grid >= 65)
         matches = 0
-        cell = self.truth_maze.spec.cell_size_m
+        cell_width = physical_cell_width_m(self.truth_maze.spec)
+        cell_length = physical_cell_length_m(self.truth_maze.spec)
         for row, col in zip(occupied_rows, occupied_cols):
             x = message.info.origin.position.x + (col + 0.5) * message.info.resolution
             y = message.info.origin.position.y + (row + 0.5) * message.info.resolution
-            maze_col = round(x / cell + (self.truth_maze.spec.width_cells - 1) / 2.0)
-            maze_row = round((self.truth_maze.spec.height_cells - 1) / 2.0 - y / cell)
+            maze_col = round(x / cell_width + (self.truth_maze.spec.width_cells - 1) / 2.0)
+            maze_row = round((self.truth_maze.spec.height_cells - 1) / 2.0 - y / cell_length)
             if 0 <= maze_row < self.truth_maze.spec.height_cells and 0 <= maze_col < self.truth_maze.spec.width_cells:
                 matches += int(self.truth_maze.grid[maze_row, maze_col] == WALL)
         count = len(occupied_rows)

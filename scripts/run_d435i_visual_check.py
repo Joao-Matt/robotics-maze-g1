@@ -116,6 +116,11 @@ def initial_path_yaw(config: dict[str, Any], seed: int) -> float:
         maze,
         safety_radius_m=float(config["robot"]["safety_radius_m"]),
         min_corridor_width_m=float(config["maze"]["min_corridor_width_m"]),
+        max_corridor_width_m=(
+            float(config["maze"]["max_corridor_width_m"])
+            if "max_corridor_width_m" in config["maze"]
+            else None
+        ),
     ).path
     if len(path) < 2:
         return 0.0

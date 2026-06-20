@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-pgm", type=Path, default=None, help="Optional path for PGM image output.")
     parser.add_argument("--save-svg", type=Path, default=None, help="Optional path for readable SVG output.")
     parser.add_argument("--cell-px", type=int, default=36, help="Cell size in pixels for SVG output.")
+    parser.add_argument("--cell-size-m", type=float, default=None, help="Override square maze cell size in meters.")
     return parser.parse_args()
 
 
@@ -38,11 +39,22 @@ def main() -> int:
 
     try:
         config = load_config(args.config)
+        if args.cell_size_m is not None:
+            if args.cell_size_m < 1.0 or args.cell_size_m > 4.0:
+                raise ValueError(f"cell size must be between 1.0 and 4.0 meters, got {args.cell_size_m:.3g}")
+            config["maze"]["cell_size_m"] = float(args.cell_size_m)
+            config["maze"]["cell_width_m"] = float(args.cell_size_m)
+            config["maze"]["cell_length_m"] = float(args.cell_size_m)
         maze = generate_maze_from_config(config, args.seed)
         result = validate_maze(
             maze,
             safety_radius_m=float(config["robot"]["safety_radius_m"]),
             min_corridor_width_m=float(config["maze"]["min_corridor_width_m"]),
+            max_corridor_width_m=(
+                float(config["maze"]["max_corridor_width_m"])
+                if "max_corridor_width_m" in config["maze"]
+                else None
+            ),
         )
         raise_for_invalid(result)
     except (ConfigError, KeyError, ValueError) as exc:

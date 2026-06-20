@@ -1,0 +1,98 @@
+diff --git a/explore/include/explore/explore.h b/explore/include/explore/explore.h
+index 8799783..2583d59 100644
+--- a/explore/include/explore/explore.h
++++ b/explore/include/explore/explore.h
+@@ -142,6 +142,8 @@ private:
+   double progress_timeout_;
+   bool visualize_;
+   bool return_to_init_;
++  bool prefer_minimum_turn_;
++  double max_frontier_goal_distance_;
+   std::string robot_base_frame_;
+   bool resuming_ = false;
+   bool goal_active_{false};
+diff --git a/explore/src/costmap_client.cpp b/explore/src/costmap_client.cpp
+index ae2da83..a7ea22b 100644
+--- a/explore/src/costmap_client.cpp
++++ b/explore/src/costmap_client.cpp
+@@ -224,7 +224,10 @@ geometry_msgs::msg::Pose Costmap2DClient::getRobotPose() const
+   geometry_msgs::msg::PoseStamped robot_pose;
+   geometry_msgs::msg::Pose empty_pose;
+   robot_pose.header.frame_id = robot_base_frame_;
+-  robot_pose.header.stamp = node_.now();
++  // Simulation clock callbacks can run slightly ahead of the most recent TF.
++  // Time(0) asks tf2 for the latest coherent transform instead of returning an
++  // empty pose for a harmless few-millisecond extrapolation gap.
++  robot_pose.header.stamp = rclcpp::Time(0);
+ 
+   auto& clk = *node_.get_clock();
+ 
+diff --git a/explore/src/explore.cpp b/explore/src/explore.cpp
+index d72fb18..d46a504 100644
+--- a/explore/src/explore.cpp
++++ b/explore/src/explore.cpp
+@@ -70,6 +70,8 @@ Explore::Explore()
+   this->declare_parameter<float>("gain_scale", 1.0);
+   this->declare_parameter<float>("min_frontier_size", 0.5);
+   this->declare_parameter<bool>("return_to_init", false);
++  this->declare_parameter<bool>("prefer_minimum_turn", false);
++  this->declare_parameter<float>("max_frontier_goal_distance", 4.5);
+ 
+   this->get_parameter("planner_frequency", planner_frequency_);
+   this->get_parameter("progress_timeout", timeout);
+@@ -79,6 +81,8 @@ Explore::Explore()
+   this->get_parameter("gain_scale", gain_scale_);
+   this->get_parameter("min_frontier_size", min_frontier_size);
+   this->get_parameter("return_to_init", return_to_init_);
++  this->get_parameter("prefer_minimum_turn", prefer_minimum_turn_);
++  this->get_parameter("max_frontier_goal_distance", max_frontier_goal_distance_);
+   this->get_parameter("robot_base_frame", robot_base_frame_);
+ 
+   progress_timeout_ = timeout;
+@@ -232,6 +236,28 @@ void Explore::makePlan()
+   auto pose = costmap_client_.getRobotPose();
+   // get frontiers sorted according to cost
+   auto frontiers = search_.searchFrom(pose.position);
++  if (prefer_minimum_turn_) {
++    const auto& q = pose.orientation;
++    const double robot_yaw = std::atan2(
++        2.0 * (q.w * q.z + q.x * q.y),
++        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
++    const auto turn_angle = [&pose, robot_yaw](
++                                const frontier_exploration::Frontier& frontier) {
++      const double bearing = std::atan2(frontier.centroid.y - pose.position.y,
++                                        frontier.centroid.x - pose.position.x);
++      return std::abs(std::atan2(std::sin(bearing - robot_yaw),
++                                std::cos(bearing - robot_yaw)));
++    };
++    std::stable_sort(frontiers.begin(), frontiers.end(),
++                     [&turn_angle](const auto& lhs, const auto& rhs) {
++      const double lhs_turn = turn_angle(lhs);
++      const double rhs_turn = turn_angle(rhs);
++      if (std::abs(lhs_turn - rhs_turn) > 1e-6) {
++        return lhs_turn < rhs_turn;
++      }
++      return lhs.cost < rhs.cost;
++    });
++  }
+   RCLCPP_DEBUG(logger_, "found %lu frontiers", frontiers.size());
+   for (size_t i = 0; i < frontiers.size(); ++i) {
+     RCLCPP_DEBUG(logger_, "frontier %zd cost: %f", i, frontiers[i].cost);
+@@ -266,6 +292,17 @@ void Explore::makePlan()
+     return;
+   }
+   geometry_msgs::msg::Point target_position = frontier->centroid;
++  const double target_dx = target_position.x - pose.position.x;
++  const double target_dy = target_position.y - pose.position.y;
++  const double target_distance = std::sqrt(target_dx * target_dx + target_dy * target_dy);
++  if (max_frontier_goal_distance_ > 0.0 &&
++      target_distance > max_frontier_goal_distance_) {
++    const double scale = max_frontier_goal_distance_ / target_distance;
++    target_position.x = pose.position.x + target_dx * scale;
++    target_position.y = pose.position.y + target_dy * scale;
++    RCLCPP_DEBUG(logger_, "Capped frontier goal from %.2f m to %.2f m lookahead",
++                 target_distance, max_frontier_goal_distance_);
++  }
+ 
+   // time out if we are not making any progress
+   bool same_goal = same_point(prev_goal_, target_position);

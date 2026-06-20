@@ -1,4 +1,4 @@
-"""Turn-aware oracle route following for the Lucky G1 walker."""
+"""Turn-aware oracle route following for the Unitree RL Gym native G1 policy."""
 
 from __future__ import annotations
 

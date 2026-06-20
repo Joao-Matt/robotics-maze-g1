@@ -26,6 +26,9 @@ setup(
             "artifact_collector = g1_mujoco_bridge.artifact_collector:main",
             "scan_artifact_collector = g1_mujoco_bridge.scan_artifact_collector:main",
             "slam_artifact_collector = g1_mujoco_bridge.slam_artifact_collector:main",
+            "navigation_depth_scan = g1_mujoco_bridge.navigation_depth_scan:main",
+            "voxel_cloud_to_scan = g1_mujoco_bridge.voxel_cloud_to_scan:main",
+            "depth_point_cloud = g1_mujoco_bridge.depth_point_cloud:main",
         ]
     },
 )

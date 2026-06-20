@@ -18,7 +18,7 @@ slam_toolbox:
     minimum_time_interval: 0.30
     transform_publish_period: 0.05
     map_update_interval: 2.0
-    transform_timeout: 0.5
+    transform_timeout: 2.0
     tf_buffer_duration: 30.0
     throttle_scans: 1
     use_scan_matching: true

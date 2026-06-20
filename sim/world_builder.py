@@ -1,4 +1,4 @@
-"""Build generated MuJoCo maze worlds for Milestone 3."""
+"""Build generated MuJoCo maze worlds for the production Unitree G1 runtime."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 from maze.generator import generate_maze_from_config
-from maze.grid import WALL, Cell, Maze
+from maze.grid import WALL, Cell, Maze, physical_cell_width_m, physical_cell_length_m
 from maze.validator import raise_for_invalid, validate_maze
 from maze.visualization import save_svg
 from sim.d435i_sensor import install_d435i
@@ -40,7 +40,8 @@ class WorldBuildResult:
 
 
 COORDINATE_CONVENTION = (
-    "world origin is the maze center; x=(col-(width_cells-1)/2)*cell_size_m; "
+    "world origin is the maze center; square cells use cell_size_m; "
+    "x=(col-(width_cells-1)/2)*cell_size_m; "
     "y=((height_cells-1)/2-row)*cell_size_m; z=0 is floor height"
 )
 
@@ -49,8 +50,8 @@ def cell_to_world_xy(maze: Maze, cell: Cell) -> tuple[float, float]:
     """Convert a maze cell to the center of that cell in MuJoCo world x/y."""
     row, col = cell
     spec = maze.spec
-    x = (col - (spec.width_cells - 1) / 2.0) * spec.cell_size_m
-    y = ((spec.height_cells - 1) / 2.0 - row) * spec.cell_size_m
+    x = (col - (spec.width_cells - 1) / 2.0) * physical_cell_width_m(spec)
+    y = ((spec.height_cells - 1) / 2.0 - row) * physical_cell_length_m(spec)
     return float(x), float(y)
 
 
@@ -68,6 +69,11 @@ def build_maze_world(
         maze,
         safety_radius_m=float(config["robot"]["safety_radius_m"]),
         min_corridor_width_m=float(config["maze"]["min_corridor_width_m"]),
+        max_corridor_width_m=(
+            float(config["maze"]["max_corridor_width_m"])
+            if "max_corridor_width_m" in config["maze"]
+            else None
+        ),
     )
     raise_for_invalid(validation)
 
@@ -75,8 +81,7 @@ def build_maze_world(
     if not base_model_path.exists():
         raise FileNotFoundError(
             f"Base G1 model XML does not exist: {base_model_path}. "
-            "Run `make fetch-lucky-g1-policy` for the default Lucky model, or "
-            "`git submodule update --init --recursive` if you are using the legacy Menagerie model."
+            "Run `make fetch-unitree-rl-gym-policy` for the Unitree RL Gym native model."
         )
 
     world_xml_path = output_dir / f"world_seed-{seed}.xml"
@@ -117,7 +122,7 @@ def build_maze_world(
 def _base_model_path(config: dict[str, Any], project_root: Path) -> Path:
     raw_path = config.get("robot", {}).get("base_model_xml_path")
     if raw_path is None:
-        raw_path = "assets/mujoco_menagerie/unitree_g1/g1.xml"
+        raise KeyError("Config is missing robot.base_model_xml_path for the Unitree RL Gym native model.")
     return resolve_project_path(raw_path, project_root)
 
 
@@ -131,7 +136,18 @@ def _load_base_model_tree(base_model_path: Path) -> ET.ElementTree:
         compiler = ET.Element("compiler")
         root.insert(0, compiler)
     compiler.set("angle", "radian")
-    compiler.set("meshdir", str(base_model_path.parent / "assets"))
+    meshdir = compiler.get("meshdir")
+    if meshdir:
+        mesh_path = Path(meshdir)
+        if not mesh_path.is_absolute():
+            mesh_path = base_model_path.parent / mesh_path
+    elif (base_model_path.parent / "assets").is_dir():
+        mesh_path = base_model_path.parent / "assets"
+    elif (base_model_path.parent / "meshes").is_dir():
+        mesh_path = base_model_path.parent / "meshes"
+    else:
+        mesh_path = base_model_path.parent
+    compiler.set("meshdir", str(mesh_path))
 
     return tree
 
@@ -143,12 +159,14 @@ def _append_world_geometry(tree: ET.ElementTree, maze: Maze, config: dict[str, A
     if worldbody is None:
         worldbody = ET.SubElement(root, "worldbody")
 
-    cell_size = float(config["maze"]["cell_size_m"])
+    cell_width = physical_cell_width_m(maze.spec)
+    cell_length = physical_cell_length_m(maze.spec)
     wall_height = float(config["maze"]["wall_height_m"])
-    half_cell = cell_size / 2.0
+    half_cell_width = cell_width / 2.0
+    half_cell_length = cell_length / 2.0
     half_height = wall_height / 2.0
-    floor_size_x = maze.spec.width_cells * cell_size / 2.0
-    floor_size_y = maze.spec.height_cells * cell_size / 2.0
+    floor_size_x = maze.spec.width_cells * cell_width / 2.0
+    floor_size_y = maze.spec.height_cells * cell_length / 2.0
 
     ET.SubElement(
         worldbody,
@@ -159,6 +177,7 @@ def _append_world_geometry(tree: ET.ElementTree, maze: Maze, config: dict[str, A
             "pos": "0 0 0",
             "size": f"{floor_size_x:.6g} {floor_size_y:.6g} 0.05",
             "rgba": "0.82 0.86 0.88 1",
+            "group": "4",
         },
     )
 
@@ -174,9 +193,10 @@ def _append_world_geometry(tree: ET.ElementTree, maze: Maze, config: dict[str, A
                     "name": f"maze_wall_{row}_{col}",
                     "type": "box",
                     "pos": f"{x:.6g} {y:.6g} {half_height:.6g}",
-                    "size": f"{half_cell:.6g} {half_cell:.6g} {half_height:.6g}",
+                    "size": f"{half_cell_width:.6g} {half_cell_length:.6g} {half_height:.6g}",
                     "rgba": "0.16 0.18 0.22 1",
                     "friction": "0.8 0.1 0.1",
+                    "group": "4",
                 },
             )
 
@@ -185,7 +205,10 @@ def _append_world_geometry(tree: ET.ElementTree, maze: Maze, config: dict[str, A
 
 
 def _set_world_view_defaults(root: ET.Element, maze: Maze) -> None:
-    extent = max(maze.spec.width_cells, maze.spec.height_cells) * maze.spec.cell_size_m * 0.75
+    extent = max(
+        maze.spec.width_cells * physical_cell_width_m(maze.spec),
+        maze.spec.height_cells * physical_cell_length_m(maze.spec),
+    ) * 0.75
 
     statistic = root.find("statistic")
     if statistic is None:
@@ -206,7 +229,7 @@ def _set_world_view_defaults(root: ET.Element, maze: Maze) -> None:
 
 def _append_marker(worldbody: ET.Element, maze: Maze, cell: Cell, name: str, rgba: str) -> None:
     x, y = cell_to_world_xy(maze, cell)
-    radius = maze.spec.cell_size_m * 0.28
+    radius = min(physical_cell_width_m(maze.spec), physical_cell_length_m(maze.spec)) * 0.28
     ET.SubElement(
         worldbody,
         "geom",

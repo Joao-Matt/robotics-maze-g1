@@ -9,7 +9,7 @@ from math import ceil
 
 import numpy as np
 
-from maze.grid import FREE, WALL, Cell, Maze, is_inside, neighbors_4
+from maze.grid import FREE, WALL, Cell, Maze, is_inside, neighbors_4, physical_corridor_width_m
 from sim.world_builder import cell_to_world_xy
 
 
@@ -56,8 +56,9 @@ def plan_oracle_path(
 def inflate_obstacles(maze: Maze, *, safety_radius_m: float) -> np.ndarray:
     """Inflate walls only when the radius exceeds half a maze cell."""
     grid = np.array(maze.grid, copy=True)
-    clearance_over_half_cell = max(0.0, float(safety_radius_m) - maze.spec.cell_size_m / 2.0)
-    radius_cells = int(ceil(clearance_over_half_cell / maze.spec.cell_size_m))
+    corridor_width = physical_corridor_width_m(maze.spec)
+    clearance_over_half_cell = max(0.0, float(safety_radius_m) - corridor_width / 2.0)
+    radius_cells = int(ceil(clearance_over_half_cell / corridor_width))
     if radius_cells <= 0:
         return grid
 

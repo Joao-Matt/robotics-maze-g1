@@ -17,7 +17,7 @@ from sensor_msgs.msg import Image, LaserScan
 from tf2_msgs.msg import TFMessage
 
 from maze.generator import generate_maze_from_config
-from maze.grid import WALL
+from maze.grid import WALL, physical_cell_length_m, physical_cell_width_m
 from scripts.run_d435i_visual_check import normalize_depth
 from sim.config import load_config
 from sim.mujoco_runner import _write_png
@@ -39,6 +39,8 @@ class ScanArtifactCollector(Node):
         corridor_width = float(self.get_parameter("corridor_width_m").value)
         if corridor_width > 0.0:
             self.config["maze"]["cell_size_m"] = corridor_width
+            self.config["maze"]["cell_width_m"] = corridor_width
+            self.config["maze"]["cell_length_m"] = corridor_width
         self.output_dir = Path(str(self.get_parameter("output_dir").value))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.duration = float(self.get_parameter("duration_s").value)
@@ -146,8 +148,10 @@ class ScanArtifactCollector(Node):
             return None, {}
         size = 768
         image = np.full((size, size, 3), 238, dtype=np.uint8)
-        extent_x = self.maze.spec.width_cells * self.maze.spec.cell_size_m
-        extent_y = self.maze.spec.height_cells * self.maze.spec.cell_size_m
+        cell_width = physical_cell_width_m(self.maze.spec)
+        cell_length = physical_cell_length_m(self.maze.spec)
+        extent_x = self.maze.spec.width_cells * cell_width
+        extent_y = self.maze.spec.height_cells * cell_length
 
         def pixel(x: float, y: float) -> tuple[int, int]:
             px = int(np.clip((x / extent_x + 0.5) * size, 0, size - 1))
@@ -191,9 +195,10 @@ class ScanArtifactCollector(Node):
         }
 
     def _near_wall(self, x: float, y: float) -> bool:
-        cell = self.maze.spec.cell_size_m
-        col_float = x / cell + (self.maze.spec.width_cells - 1) / 2.0
-        row_float = (self.maze.spec.height_cells - 1) / 2.0 - y / cell
+        cell_width = physical_cell_width_m(self.maze.spec)
+        cell_length = physical_cell_length_m(self.maze.spec)
+        col_float = x / cell_width + (self.maze.spec.width_cells - 1) / 2.0
+        row_float = (self.maze.spec.height_cells - 1) / 2.0 - y / cell_length
         for row in range(max(0, math.floor(row_float - 0.6)), min(self.maze.spec.height_cells, math.ceil(row_float + 0.6) + 1)):
             for col in range(max(0, math.floor(col_float - 0.6)), min(self.maze.spec.width_cells, math.ceil(col_float + 0.6) + 1)):
                 if self.maze.grid[row, col] != WALL:
