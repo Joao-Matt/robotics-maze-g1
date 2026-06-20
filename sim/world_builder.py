@@ -14,6 +14,7 @@ from maze.generator import generate_maze_from_config
 from maze.grid import WALL, Cell, Maze
 from maze.validator import raise_for_invalid, validate_maze
 from maze.visualization import save_svg
+from sim.d435i_sensor import install_d435i
 from sim.mujoco_runner import PROJECT_ROOT, resolve_project_path
 
 
@@ -83,6 +84,7 @@ def build_maze_world(
     topdown_svg_path = output_dir / f"world_seed-{seed}_topdown.svg"
 
     tree = _load_base_model_tree(base_model_path)
+    install_d435i(tree, config)
     _append_world_geometry(tree, maze, config)
     _place_stand_keyframe_at_start(tree, maze, config)
     tree.write(world_xml_path, encoding="utf-8", xml_declaration=True)

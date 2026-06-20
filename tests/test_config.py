@@ -34,7 +34,7 @@ def test_default_oracle_speed_is_visible_for_lucky_walker():
     config = load_config(PROJECT_ROOT / "configs" / "default.yaml")
 
     assert config["oracle"]["forward_speed_mps"] >= 0.8
-    assert config["oracle"]["arc_turn_speed_mps"] == 0.4
+    assert config["oracle"]["arc_turn_speed_mps"] == 0.8
     assert config["oracle"]["arc_turn_forward_speed_mps"] == 0.4
     assert config["oracle"]["arc_turn_yaw_rate_radps"] == 0.8
     assert config["oracle"]["turn_start_distance_m"] == 0.8

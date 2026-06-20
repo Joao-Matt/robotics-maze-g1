@@ -137,6 +137,15 @@ make view-world SEED=123
 make run SEED=123 DURATION=3
 make view-run SEED=123 DURATION=3
 make view SEED=123 VIEW_DURATION=30
+make d435i-visual-check SEED=123
+make ros-bridge-check SEED=123
+make ros-bridge-view SEED=123
+make d435i-scan-check SEED=123
+make d435i-scan-view SEED=123
+make slam-map SEED=123
+make slam-map-view SEED=123
+make nav2-slam-demo SEED=123
+make nav2-slam-view SEED=123
 make milestone_4 SEED=123
 make view-milestone_4 SEED=123
 make milestone_4-wide SEED=123
@@ -206,6 +215,146 @@ runs/visual/g1_oracle_follow_seed-123_policy_compatibility.json
 ```
 
 The dashboard shows the planned path, actual trajectory, pre-turn points, left/right arc sections, final render, controller state, and event counts. The JSONL log records state changes, turns, recovery attempts, and failures. Reaching and following the oracle route is sufficient for this project's Milestone 5 acceptance.
+
+## Phase 1 — Simulated D435i Camera
+
+Phase 1 mounts a visible D435i-style RGB-D/IMU assembly on the G1 upper torso. It is a MuJoCo-only sensor check: ROS, SLAM, Nav2, and `/scan` are intentionally not included.
+
+```bash
+make d435i-visual-check SEED=123
+```
+
+The command records the configured camera pose, frame names, resolution, FOV/intrinsics, depth statistics, seed, model, and generated world. It writes:
+
+```text
+runs/visual/d435i_mount_seed-123_final.png
+runs/visual/d435i_camera_view_seed-123_rgb.png
+runs/visual/d435i_camera_view_seed-123_depth.png
+runs/visual/d435i_mount_dashboard.html
+runs/visual/d435i_mount_summary.json
+```
+
+## Phase 2 — ROS 2 MuJoCo Sensor Bridge
+
+Phase 2 publishes the simulated G1 and D435i state through ROS 2 Humble. From the host, the check automatically runs in the existing Docker image; inside a ROS-enabled development container it builds and runs directly. Source changes use the bind mount, so this does not require rebuilding the Docker image.
+
+```bash
+make ros-bridge-check SEED=123
+```
+
+For a live browser view showing the robot in the maze beside continuously updating RGB and depth feeds:
+
+```bash
+make ros-bridge-view SEED=123
+```
+
+Then open [http://127.0.0.1:8765/ros_bridge_live.html](http://127.0.0.1:8765/ros_bridge_live.html). Keep the terminal running and press `Ctrl-C` there when finished. Use `ROS_BRIDGE_PORT=8766` if port 8765 is already occupied.
+
+The bridge publishes `/clock`, `/joint_states`, `/imu/data`, RGB and metric `32FC1` depth images, both `CameraInfo` topics, and a connected `map → odom → base_link → torso_link → d435i` TF tree. The headless CPU configuration targets 3 Hz RGB-D, 50 Hz IMU/joints/TF, and 100 Hz clock publication. `/scan`, SLAM, and Nav2 remain outside Phase 2.
+
+Artifacts are written under `runs/visual/`:
+
+```text
+ros_bridge_seed-123_topics.txt
+ros_bridge_seed-123_topic_rates.txt
+ros_bridge_seed-123_tf_frames.svg
+ros_bridge_seed-123_rgb.png
+ros_bridge_seed-123_depth.png
+ros_bridge_seed-123_dashboard.html
+ros_bridge_seed-123_summary.json
+```
+
+While the check is running, another ROS-enabled terminal can inspect it with:
+
+```bash
+ros2 topic list
+ros2 topic hz /camera/depth/image_rect_raw
+ros2 topic hz /imu/data
+ros2 topic echo /camera/depth/camera_info --once
+```
+
+## Phase 3 — D435i Depth to LaserScan
+
+Phase 3 converts the metric D435i depth stream into `/scan` with ROS Humble's `depthimage_to_laserscan`. It validates scan rate, range and angle fields, TF connectivity, and alignment against the known maze walls. SLAM, mapping, Nav2, and walking-policy integration are intentionally excluded.
+
+```bash
+make d435i-scan-check SEED=123
+```
+
+The bounded check produces RGB, depth, scan overlay, topic-rate, dashboard, summary, and headless RViz-equivalent artifacts under `runs/visual/`.
+
+For live inspection with RViz plus a browser showing the robot, RGB, depth, and continuously updating scan overlay:
+
+```bash
+make d435i-scan-view SEED=123
+```
+
+Then open [http://127.0.0.1:8765/ros_bridge_live.html](http://127.0.0.1:8765/ros_bridge_live.html). Keep the terminal running and press `Ctrl-C` when finished. The live command requires the GUI Docker path for RViz; the bounded check remains fully headless.
+
+Artifacts:
+
+```text
+runs/visual/d435i_scan_seed-123_rviz.png
+runs/visual/d435i_scan_seed-123_rgb.png
+runs/visual/d435i_scan_seed-123_depth.png
+runs/visual/d435i_scan_seed-123_scan_overlay.png
+runs/visual/d435i_scan_seed-123_topic_rates.txt
+runs/visual/d435i_scan_seed-123_dashboard.html
+runs/visual/d435i_scan_seed-123_summary.json
+```
+
+## Phase 4 — SLAM Toolbox Mapping
+
+Phase 4 runs the Lucky Walker start-to-goal oracle follower while feeding Phase 3 `/scan` into asynchronous `slam_toolbox`. The bridge publishes MuJoCo ground-truth `odom → base_link` as an explicit mapping baseline; `slam_toolbox` exclusively owns `map → odom`. Nav2 and autonomous navigation are not started.
+
+```bash
+make slam-map SEED=123
+```
+
+The default run allows up to 300 seconds and records a compact rosbag. While it runs, open [http://127.0.0.1:8765/ros_bridge_live.html](http://127.0.0.1:8765/ros_bridge_live.html) to see the moving robot, RGB, depth, scan overlay, and evolving occupancy map.
+
+For the same mapping run with RViz:
+
+```bash
+make slam-map-view SEED=123
+```
+
+Generated artifacts include `slam_seed-123_map.pgm`, its YAML metadata, dashboard, TF tree, RViz-equivalent preview, summary, and `slam_seed-123_bag/`. Use `SLAM_DURATION=30` for a shorter development run; a short run maps only the beginning of the route.
+
+## Phase 5 — Two-Stage Nav2 Evaluation
+
+Phase 5 first maps the complete oracle start-to-exit route with SLAM, then resets G1 at the entrance, reloads that saved map, and gives both Nav2 and the oracle the final maze goal. Lucky Walker remains the only controller applied to G1; Nav2's `/cmd_vel` is a monitor-only shadow command.
+
+Run the headless two-stage evaluation:
+
+```bash
+make nav2-slam-demo SEED=123
+```
+
+While it runs, open [http://127.0.0.1:8765/ros_bridge_live.html](http://127.0.0.1:8765/ros_bridge_live.html). The browser contains exactly four live panels: robot in maze, RGB camera, overhead maze view, and Nav2-versus-oracle commands. Stage 1 builds the map; stage 2 reloads it and performs the comparison. Use another `ROS_BRIDGE_PORT` if needed.
+
+For the same evaluation with RViz showing the occupancy map, LaserScan overlay, and depth camera:
+
+```bash
+make nav2-slam-view SEED=123
+```
+
+Artifacts are written under `runs/visual/`:
+
+```text
+nav2_slam_seed-123_rviz.png
+nav2_slam_seed-123_costmaps.png
+nav2_slam_seed-123_path.svg
+nav2_slam_seed-123_cmd_vel.csv
+nav2_slam_seed-123_dashboard.html
+nav2_slam_seed-123_summary.json
+nav2_slam_seed-123_command_comparison.csv
+nav2_slam_seed-123_command_comparison.svg
+nav2_slam_seed-123_slam_vs_maze.png
+nav2_slam_seed-123_trajectory_overlay.svg
+```
+
+The report places the final SLAM map beside a same-scale ground-truth maze, plots aligned linear and yaw commands, records MAE/RMSE/correlation/sign agreement, evaluates the Nav2 path, and overlays the actual G1 trajectory with the oracle route and latest Nav2 plan. Each stage ends at the oracle goal, a 600-second cap, or 20 continuous seconds of zero oracle commands. Override these with `NAV2_MAP_MAX_DURATION`, `NAV2_EVAL_MAX_DURATION`, and `NAV2_ZERO_COMMAND_TIMEOUT`; `NAV2_SLAM_DURATION` remains a compatibility override for both duration caps.
 
 ## G1 Locomotion Policy Sandbox
 

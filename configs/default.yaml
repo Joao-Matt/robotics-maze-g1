@@ -24,8 +24,26 @@ robot:
   initial_base_height_m: 0.76
   safety_radius_m: 0.45
   goal_tolerance_m: 0.5
-  max_forward_speed_mps: 0.25
-  max_yaw_rate_radps: 0.5
+  max_forward_speed_mps: 0.75
+  max_yaw_rate_radps: 0.75
+
+d435i:
+  enabled: true
+  parent_body: torso_link_rev_1_0
+  link_name: d435i_link
+  rgb_camera_name: d435i_rgb
+  depth_camera_name: d435i_depth
+  rgb_optical_frame: d435i_rgb_optical_frame
+  depth_optical_frame: d435i_depth_optical_frame
+  imu_frame: d435i_imu_frame
+  mount_pos_m: [0.08, 0.0, 0.34]
+  pitch_deg: 10.0
+  width: 640
+  height: 480
+  rgb_fovy_deg: 42.0
+  depth_fovy_deg: 58.0
+  depth_visual_min_m: 0.15
+  depth_visual_max_m: 8.0
 
 oracle:
   planner: bfs
@@ -33,8 +51,8 @@ oracle:
   waypoint_tolerance_m: 0.75
   goal_tolerance_m: 0.5
   heading_threshold_rad: 0.45
-  forward_speed_mps: 0.8
-  arc_turn_speed_mps: 0.4
+  forward_speed_mps: 1
+  arc_turn_speed_mps: 0.8
   turn_start_distance_m: 0.8
   pre_turn_distance_m: 0.8
   arc_turn_forward_speed_mps: 0.4

@@ -1,0 +1,17 @@
+g1_mujoco_bridge:
+  ros__parameters:
+    use_sim_time: true
+    clock_rate_hz: 100.0
+    joint_tf_rate_hz: 50.0
+    imu_rate_hz: 50.0
+    camera_rate_hz: 3.0
+    hold_pose: true
+
+ros_bridge_artifact_collector:
+  ros__parameters:
+    use_sim_time: true
+    duration_s: 8.0
+    expected_clock_rate_hz: 100.0
+    expected_joint_tf_rate_hz: 50.0
+    expected_imu_rate_hz: 50.0
+    expected_camera_rate_hz: 3.0

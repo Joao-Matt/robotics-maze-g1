@@ -1,0 +1,21 @@
+Panels:
+  - Class: rviz_common/Displays
+Visualization Manager:
+  Global Options: {Fixed Frame: map, Background Color: 20; 25; 35}
+  Displays:
+    - Class: rviz_default_plugins/Map
+      Name: Evolving SLAM / Saved Map
+      Enabled: true
+      Topic: {Value: /map, Durability Policy: Transient Local}
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan Overlay
+      Enabled: true
+      Topic: {Value: /scan, Reliability Policy: Best Effort}
+      Size (Pixels): 4
+      Style: Points
+      Color: 255; 40; 40
+    - Class: rviz_default_plugins/Image
+      Name: Depth Camera
+      Enabled: true
+      Topic: {Value: /camera/depth/image_rect_raw, Reliability Policy: Best Effort}
+  Views: {Current: {Class: rviz_default_plugins/TopDownOrtho, Scale: 35}}

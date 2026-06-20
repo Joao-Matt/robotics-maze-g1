@@ -20,6 +20,9 @@ third_party/
 .idea/
 .vscode/
 .tmp/
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
 
 # Machine-local storage policy (see .env.storage.example).
 .env.storage
