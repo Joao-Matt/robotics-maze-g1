@@ -401,9 +401,9 @@ class MazeFallbackGoal(Node):
             self.maze_path = [self._world_to_start_relative(point[:2], start_world, yaw) for point in plan.waypoints]
             return self._world_to_start_relative(goal_world, start_world, yaw)
         except PlanningError as exc:
-            self.get_logger().warning("Could not compute maze path fallback: %s", exc)
+            self.get_logger().warning(f"Could not compute maze path fallback: {exc}")
         except Exception as exc:
-            self.get_logger().warning("Could not compute maze goal fallback: %s", exc)
+            self.get_logger().warning(f"Could not compute maze goal fallback: {exc}")
         self.maze_path = []
         return None
 

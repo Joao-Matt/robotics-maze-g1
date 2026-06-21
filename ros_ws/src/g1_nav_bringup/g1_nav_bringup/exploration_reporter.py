@@ -52,8 +52,8 @@ class ExplorationReporter(Node):
         self.started_at=self._now(); self.clock_start_sim=None; self.clock_last_sim=None; self.clock_start_wall=None; self.first_map_time=None; self.known_cell_growth=[]
         config=load_config(str(self.get_parameter("config_path").value)); corridor_width=float(self.get_parameter("corridor_width_m").value); config["maze"]["cell_size_m"]=corridor_width; config["maze"]["cell_width_m"]=corridor_width; config["maze"]["cell_length_m"]=corridor_width
         self.maze=generate_maze_from_config(config,self.seed); self.spawn_yaw=float(config.get("nav2_navigation",{}).get("initial_spawn_yaw_rad",0.0)); self.start_world=cell_to_world_xy(self.maze,self.maze.spec.start_cell)
-        self.raw=[]; self.applied=[]; self.measured=[]; self.actual=[]; self.odom=[]; self.odom_eval=[]; self.actual_eval=[]; self.paths=[]
-        self.frontier_goal=self.marker_goal=self.fallback_goal=None; self.trajectory_pub=self.create_publisher(NavPath,"/exploration/trajectory",10)
+        self.raw=[]; self.applied=[]; self.measured=[]; self.actual=[]; self.actual_odom=[]; self.odom=[]; self.odom_eval=[]; self.actual_eval=[]; self.paths=[]
+        self.frontier_goal=self.marker_goal=self.fallback_goal=None; self.trajectory_pub=self.create_publisher(NavPath,"/exploration/trajectory",10); self.truth_trajectory_pub=self.create_publisher(NavPath,"/ground_truth/trajectory",10)
         self.create_subscription(ClockMessage,"/clock",self._clock_message,10)
         self.create_subscription(OccupancyGrid,"/map",self._map,10)
         self.create_subscription(Twist,"/cmd_vel",lambda m:self.raw.append((self._now(),m.linear.x,m.angular.z)),50)
@@ -85,10 +85,18 @@ class ExplorationReporter(Node):
             pose=PoseStamped(); pose.header=path.header; pose.pose.position.x=x; pose.pose.position.y=y; pose.pose.orientation.w=1.0; path.poses.append(pose)
         self.trajectory_pub.publish(path)
     def _actual(self,msg):
-        self.actual.append((_stamp(msg.header.stamp),msg.pose.pose.position.x,msg.pose.pose.position.y))
-        self.actual_eval.append((_stamp(msg.header.stamp),msg.pose.pose.position.x,msg.pose.pose.position.y,self._yaw(msg.pose.pose.orientation)))
+        t=_stamp(msg.header.stamp); x,y=msg.pose.pose.position.x,msg.pose.pose.position.y
+        self.actual.append((t,x,y)); self.actual_eval.append((t,x,y,self._yaw(msg.pose.pose.orientation)))
+        ox,oy=self._world_to_start_relative((x,y)); self.actual_odom.append((t,ox,oy))
+        path=NavPath(); path.header=msg.header; path.header.frame_id="odom"
+        for _,px,py in self.actual_odom[-2000:]:
+            pose=PoseStamped(); pose.header=path.header; pose.pose.position.x=px; pose.pose.position.y=py; pose.pose.orientation.w=1.0; path.poses.append(pose)
+        self.truth_trajectory_pub.publish(path)
     @staticmethod
     def _yaw(q):return math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+    def _world_to_start_relative(self,point):
+        dx,dy=point[0]-self.start_world[0],point[1]-self.start_world[1]; c,s=math.cos(self.spawn_yaw),math.sin(self.spawn_yaw)
+        return c*dx+s*dy,-s*dx+c*dy
     def _localization_metrics(self,csv_path):
         if not self.odom_eval or not self.actual_eval:return {"aligned_samples":0}
         actual=np.asarray(self.actual_eval,dtype=float); odom=np.asarray(self.odom_eval,dtype=float); rotation=actual[0,3]-odom[0,3]; c,s=math.cos(rotation),math.sin(rotation)
@@ -114,7 +122,7 @@ class ExplorationReporter(Node):
         try:self.motion=json.loads(msg.data)
         except Exception:self.motion={"status":msg.data}
         status=str(self.motion.get("status",""))
-        if status in {"COLLISION_ABORT","FALL_DETECTED","FAILED","ZERO_COMMAND_TIMEOUT","STUCK"}:self._finish(status)
+        if status in {"COLLISION_ABORT","FALL_DETECTED","FAILED","NAV2_ABORTED","COMMAND_TIMEOUT","ZERO_COMMAND_TIMEOUT","STUCK","TIMEOUT"}:self._finish(status)
     def _odom_status(self,msg):
         try:self.odom_quality=json.loads(msg.data)
         except Exception:self.odom_quality={"status":msg.data}
@@ -177,10 +185,10 @@ class ExplorationReporter(Node):
         width,height=np.maximum(1,np.ceil((upper-origin)/resolution).astype(int))
         return self._truth_grid(int(width),int(height),resolution,float(origin[0]),float(origin[1])),float(origin[0]),float(origin[1])
     def _trajectory_svg(self,path):
-        actual=[(x,y) for _,x,y in self.actual]; odom=[(x,y) for _,x,y,_,_ in self.odom]; plan=self.paths[-1] if self.paths else []
+        actual=[(x,y) for _,x,y in self.actual_odom]; odom=[(x,y) for _,x,y,_,_ in self.odom]; plan=self.paths[-1] if self.paths else []
         points=actual+odom+plan or [(0,0),(1,1)]; xs=[p[0] for p in points]; ys=[p[1] for p in points]; xmin,xmax=min(xs)-.5,max(xs)+.5; ymin,ymax=min(ys)-.5,max(ys)+.5
         def line(seq):return " ".join(f"{40+640*(x-xmin)/max(.1,xmax-xmin):.1f},{680-640*(y-ymin)/max(.1,ymax-ymin):.1f}" for x,y in seq)
-        path.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720"><rect width="100%" height="100%" fill="white"/><polyline points="{line(plan)}" fill="none" stroke="#38bdf8" stroke-width="4"/><polyline points="{line(odom)}" fill="none" stroke="#22c55e" stroke-width="4"/><polyline points="{line(actual)}" fill="none" stroke="#f97316" stroke-width="4"/><g font-family="sans-serif"><text x="20" y="24" fill="#38bdf8">Nav2</text><text x="90" y="24" fill="#22c55e">RGB-D odom</text><text x="220" y="24" fill="#f97316">Ground truth evaluation</text></g></svg>\n',encoding="utf-8")
+        path.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720"><rect width="100%" height="100%" fill="white"/><polyline points="{line(plan)}" fill="none" stroke="#38bdf8" stroke-width="4"/><polyline points="{line(odom)}" fill="none" stroke="#a855f7" stroke-width="4"/><polyline points="{line(actual)}" fill="none" stroke="#22c55e" stroke-width="4"/><g font-family="sans-serif"><text x="20" y="24" fill="#38bdf8">Nav2</text><text x="90" y="24" fill="#a855f7">Sensor odom</text><text x="220" y="24" fill="#22c55e">Actual ground truth</text></g></svg>\n',encoding="utf-8")
     def _slam_truth(self,path):
         """Write SLAM/truth/error panels and score only SLAM-observed cells."""
         if self.map is None:return {"evaluated_cells":0}
@@ -257,7 +265,14 @@ class ExplorationReporter(Node):
         wall_elapsed=max(1e-9,time.monotonic()-(self.clock_start_wall or time.monotonic()))
         sim_elapsed=max(0.0,(self.clock_last_sim or self._now())-(self.clock_start_sim or 0.0))
         terminal_source="m-explore_frontier_status" if status in {"EXPLORATION_COMPLETE","RETURNED_TO_ORIGIN","exploration_complete","returned_to_origin"} else "navigation_or_safety_status"
-        summary={"status":"completed" if completed else "failed","phase":6,"seed":self.seed,"final_status":status,"termination_source":terminal_source,"goal_source":"m-explore_frontiers_not_generated_maze_goal","generated_maze_goal_world_xy":[goal[0],goal[1]],"maze_goal_reached":maze_goal_reached,"physical_goal_error_m":physical_goal_error,"loaded_map":False,"slam_mode":"livox_mid360_slam_toolbox_with_sensor_odometry","ground_truth_used_for_navigation":False,"ground_truth_usage":"evaluation_and_comparison_only","odometry_source":"d435i_scan_odometry_livox_scan_imu_cmd_prediction","mapping_sensor":"simulated_livox_mid360_360_degree_laserscan","exploration_algorithm":"m-explore-ros2","odometry_quality":self.odom_quality or {"source":"d435i_scan_odometry","ground_truth":False},"sim_elapsed_s":sim_elapsed,"wall_elapsed_s":wall_elapsed,"realtime_factor":sim_elapsed/wall_elapsed,"known_cells_initial":known_start,"known_cells_final":known_end,"distance_traveled_m":distance,**progress,"exploration":self.exploration,"motion":self.motion,"samples":{"nav2_commands":len(self.raw),"applied_commands":len(self.applied),"navigation_odom":len(self.odom),"ground_truth_evaluation":len(self.actual)},"artifacts":{k:str(v) for k,v in paths.items()}}
+        artifacts={k:str(v) for k,v in paths.items()}
+        live_dashboard=self.out/"live_dashboard"
+        if live_dashboard.is_dir():
+            artifacts["live_dashboard"]=str(live_dashboard)
+            for name in ("kpis.latest.json","kpi_stream.ndjson","events.ndjson","timeseries_downsampled.csv","map_thumb.png"):
+                path=live_dashboard/name
+                if path.exists():artifacts[f"live_{path.stem.replace('.','_')}"]=str(path)
+        summary={"status":"completed" if completed else "failed","phase":6,"seed":self.seed,"final_status":status,"termination_source":terminal_source,"goal_source":"m-explore_frontiers_not_generated_maze_goal","generated_maze_goal_world_xy":[goal[0],goal[1]],"maze_goal_reached":maze_goal_reached,"physical_goal_error_m":physical_goal_error,"loaded_map":False,"slam_mode":"livox_mid360_slam_toolbox_with_sensor_odometry","ground_truth_used_for_navigation":False,"ground_truth_usage":"evaluation_and_comparison_only","odometry_source":"d435i_scan_odometry_livox_scan_imu_cmd_prediction","mapping_sensor":"simulated_livox_mid360_360_degree_laserscan","exploration_algorithm":"m-explore-ros2","odometry_quality":self.odom_quality or {"source":"d435i_scan_odometry","ground_truth":False},"sim_elapsed_s":sim_elapsed,"wall_elapsed_s":wall_elapsed,"realtime_factor":sim_elapsed/wall_elapsed,"known_cells_initial":known_start,"known_cells_final":known_end,"distance_traveled_m":distance,**progress,"exploration":self.exploration,"motion":self.motion,"samples":{"nav2_commands":len(self.raw),"applied_commands":len(self.applied),"navigation_odom":len(self.odom),"ground_truth_evaluation":len(self.actual)},"artifacts":artifacts}
         summary["mapping"]={"first_map_time_s":self.first_map_time,"known_cell_growth":self.known_cell_growth,"coverage_fraction":known_end/max(1,len(self.map.data)) if self.map else 0.0,"nav2_plan_updates":len(self.paths)}
         summary["mapping"]["ground_truth_comparison"]=comparison
         summary["localization_evaluation_ground_truth_only"]=localization
@@ -274,5 +289,7 @@ def main():
     try:
         while rclpy.ok() and not node.done:rclpy.spin_once(node,timeout_sec=.2)
     except KeyboardInterrupt:node._finish("INTERRUPTED")
-    finally:node.destroy_node(); rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        if rclpy.ok():rclpy.shutdown()
     return 0

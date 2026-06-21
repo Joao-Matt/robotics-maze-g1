@@ -11,6 +11,7 @@ ORACLE_DURATION ?= 300
 SLAM_DURATION ?= 300
 NAVIGATE_DURATION ?= 600
 ROS_BRIDGE_PORT ?= 8765
+DASHBOARD_PORT ?= 8765
 ROS_DOMAIN_ID ?= 0
 DOCKER_IMAGE ?= robotics-maze-g1:production
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
@@ -32,6 +33,13 @@ TORCH_CPU_PACKAGE ?= torch==2.5.1+cpu
 NAVIGATE_SKIP_BUILD ?= false
 NAVIGATE_WITH_RVIZ ?= false
 NAVIGATE_WITH_MUJOCO ?= false
+NAVIGATE_DASHBOARD ?= true
+HELDOUT_RUN_ROOT ?= runs/heldout-20
+HELDOUT_LABEL ?= held_out
+HELDOUT_JOBS ?= 1
+HELDOUT_BASE_ROS_DOMAIN_ID ?= 40
+HELDOUT_SEEDS ?= 1126362096 1979650228 1206536813 795378426 711116612 1738064285 971229033 329188623 894390399 32784551 170038683 1285796317 299369674 380511688 1312910544 1648306726 1106423062 1945965940 916063502 781626286
+SEEN_NAV_ROOT ?=
 SLAM_WITH_RVIZ ?= false
 
 export TMPDIR := $(abspath $(PROJECT_TMP))
@@ -41,7 +49,7 @@ export REQUIRED_STORAGE_MOUNT
 export EXPECTED_STORAGE_UUID
 
 .PHONY: help storage-check setup install-torch-cpu docker-build docker-run docker-run-gui docker-check-ros docker-build-multiarch
-.PHONY: fetch-unitree-rl-gym-policy fetch-m-explore prebuild prebuild-inner maze world oracle oracle-view oracle-inner slam slam-view slam-inner navigate navigate-view navigate-full-view navigate-inner bag-info clean
+.PHONY: fetch-unitree-rl-gym-policy fetch-m-explore prebuild prebuild-inner maze world oracle oracle-view oracle-inner slam slam-view slam-inner navigate navigate-view navigate-full-view demo navigate-inner heldout-navigate heldout-report bag-info clean
 
 help:
 	@printf '%s\n' \
@@ -58,7 +66,10 @@ help:
 		'  make slam-view SEED=123              # SLAM with RViz' \
 		'  make navigate SEED=123               # SLAM + m-explore + Nav2 + rosbag' \
 		'  make navigate-view SEED=123          # navigation with RViz' \
-		'  make navigate-full-view SEED=123     # navigation with RViz + MuJoCo viewer'
+		'  make navigate-full-view SEED=123     # navigation with RViz + MuJoCo viewer' \
+		'  make demo SEED=123                   # interview demo: full-view navigation + live KPI dashboard' \
+		'  make heldout-navigate                # run the fixed 20-seed headless held-out batch' \
+		'  make heldout-report                  # aggregate held-out solve rate with 95% CI'
 
 storage-check:
 	scripts/check_storage_layout.sh
@@ -174,30 +185,34 @@ slam-inner: storage-check install-torch-cpu fetch-unitree-rl-gym-policy
 
 navigate: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false; \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)"; \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
 	fi
 
 navigate-view: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false; \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)"; \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
 	fi
 
 navigate-full-view: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true; \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)"; \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
 	fi
+
+demo: storage-check
+	@$(MAKE) navigate-full-view SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD=true DASHBOARD_PORT="$(DASHBOARD_PORT)"
 
 navigate-inner: storage-check
 	@test "$${ROS_DISTRO:-}" = "humble" || (echo "navigate-inner requires ROS 2 Humble" && exit 1)
 	@run_dir=$$(python3 scripts/create_run_context.py --command navigate --seed "$(SEED)" --root "$(RUN_ROOT)" --config "$(CONFIG)" --parameter cell_size="$(CELL_SIZE_M)m" --parameter duration="$(NAVIGATE_DURATION)s"); \
 	echo "Run directory: $$run_dir"; \
-	$(MAKE) prebuild-inner NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)"; \
+	if [ "$(NAVIGATE_DASHBOARD)" = "true" ]; then echo "Live KPI dashboard requested; the URL prints after the monitor HTTP server binds."; fi; \
+	if [ "$(NAVIGATE_SKIP_BUILD)" = "true" ]; then echo "Skipping prebuild; using existing ros_ws/install."; else $(MAKE) prebuild-inner; fi; \
 	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/characterize_nav_locomotion.py --output-dir "$$run_dir" --config "$(CONFIG)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)"; \
 	PYTHONPATH="$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/render_navigation_config.py --config "$(CONFIG)" --nav2-template ros_ws/src/g1_nav_bringup/config/nav2_exploration_params.yaml --calibration "$$run_dir/locomotion_calibration.json" --output-dir "$$run_dir"; \
 	. ros_ws/install/setup.sh; \
@@ -208,8 +223,18 @@ navigate-inner: storage-check
 	ros2 bag record --all --include-hidden-topics --output "$$bag_path" >"$$bag_log" 2>&1 & bag_pid=$$!; \
 	cleanup_bag() { if [ -n "$$bag_pid" ] && kill -0 "$$bag_pid" 2>/dev/null; then kill -INT "$$bag_pid"; wait "$$bag_pid" || true; fi; bag_pid=""; }; \
 	trap cleanup_bag EXIT INT TERM; \
-	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)"; \
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)" dashboard:="$(NAVIGATE_DASHBOARD)" dashboard_port:="$(DASHBOARD_PORT)"; \
 	status=$$?; cleanup_bag; trap - EXIT INT TERM; python3 scripts/finalize_run_context.py "$$run_dir"; echo "Report: $$run_dir/dashboard.html"; exit $$status
+
+heldout-navigate: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		"$(VENV_PYTHON)" scripts/run_navigation_seed_batch.py --run-root "$(HELDOUT_RUN_ROOT)" --label "$(HELDOUT_LABEL)" --cell-size-m "$(CELL_SIZE_M)" --duration "$(NAVIGATE_DURATION)" --config "$(CONFIG)" --jobs "$(HELDOUT_JOBS)" --base-ros-domain-id "$(HELDOUT_BASE_ROS_DOMAIN_ID)" --seeds $(HELDOUT_SEEDS); \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(HELDOUT_BASE_ROS_DOMAIN_ID)" docker/run.sh python3 scripts/run_navigation_seed_batch.py --run-root "$(HELDOUT_RUN_ROOT)" --label "$(HELDOUT_LABEL)" --cell-size-m "$(CELL_SIZE_M)" --duration "$(NAVIGATE_DURATION)" --config "$(CONFIG)" --jobs "$(HELDOUT_JOBS)" --base-ros-domain-id "$(HELDOUT_BASE_ROS_DOMAIN_ID)" --seeds $(HELDOUT_SEEDS); \
+	fi
+
+heldout-report:
+	python3 scripts/aggregate_navigation_seeds.py --root "$(HELDOUT_RUN_ROOT)/navigate" --label "$(HELDOUT_LABEL)" --seeds $(HELDOUT_SEEDS) --output-json "$(HELDOUT_RUN_ROOT)/heldout_summary.json" --output-csv "$(HELDOUT_RUN_ROOT)/heldout_summary.csv" --output-html "$(HELDOUT_RUN_ROOT)/heldout_summary.html" $(if $(SEEN_NAV_ROOT),--compare-root "$(SEEN_NAV_ROOT)" --compare-label seen,)
 
 bag-info:
 	@test -n "$(BAG)" || (echo "Usage: make bag-info BAG=runs/.../rosbag" && exit 1)
