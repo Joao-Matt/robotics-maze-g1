@@ -18,7 +18,11 @@ class NavigationLimits:
     wall_contact_abort_s: float = 0.50
     stuck_timeout_s: float = 12.0
     stuck_min_progress_m: float = 0.08
+    commanded_stuck_timeout_s: float = 30.0
+    commanded_stuck_min_translation_m: float = 0.08
+    commanded_stuck_min_yaw_rad: float = 0.10
     max_forward_mps: float = 0.30
+    min_forward_mps: float = 0.10
     max_reverse_mps: float = -0.30
     max_yaw_rate_radps: float = 1.00
     turn_slowdown_start_radps: float = 0.25
@@ -80,6 +84,10 @@ class Nav2MotionSession:
         self.progress_anchor_xy = self.start_xy
         self.progress_anchor_time = float(data.time)
         self.progress_watch_active = False
+        self.commanded_motion_anchor_xy = self.start_xy
+        self.commanded_motion_anchor_yaw = start_yaw
+        self.commanded_motion_anchor_time = float(data.time)
+        self.commanded_motion_watch_active = False
         self.wall_contact_since: float | None = None
         self.contact_counts = {"foot_floor": 0, "wall": 0, "self": 0, "other": 0}
         self.max_contact_force_n = 0.0
@@ -168,7 +176,13 @@ class Nav2MotionSession:
         abs_yaw = abs(yaw_rate)
         start = max(0.0, self.limits.turn_slowdown_start_radps)
         full = max(start + 1e-6, self.limits.turn_slowdown_full_radps)
-        minimum = max(0.0, min(self.limits.turn_slowdown_min_forward_mps, forward_limit))
+        minimum = max(
+            0.0,
+            min(
+                max(self.limits.min_forward_mps, self.limits.turn_slowdown_min_forward_mps),
+                forward_limit,
+            ),
+        )
         if abs_yaw <= start:
             coupled_forward_limit = forward_limit
         elif abs_yaw >= full:
@@ -178,6 +192,8 @@ class Nav2MotionSession:
             coupled_forward_limit = forward_limit + fraction * (minimum - forward_limit)
         vx = command.vx
         if vx >= 0.0:
+            if abs_yaw > start:
+                vx = max(vx, minimum)
             vx = min(vx, coupled_forward_limit)
         else:
             vx = max(vx, reverse_limit)
@@ -207,6 +223,52 @@ class Nav2MotionSession:
             self.progress_watch_active = False
         if math.hypot(xy[0] - self.progress_anchor_xy[0], xy[1] - self.progress_anchor_xy[1]) >= self.limits.stuck_min_progress_m:
             self.progress_anchor_xy, self.progress_anchor_time = xy, now
+        self._update_commanded_stuck_watch(now, xy, yaw)
+
+    def _update_commanded_stuck_watch(self, now: float, xy: tuple[float, float], yaw: float) -> None:
+        raw = getattr(self, "raw_command", VelocityCommand())
+        nonzero_command = (
+            abs(raw.vx) > 0.03
+            or abs(raw.vy) > 0.03
+            or abs(raw.yaw_rate) > 0.05
+        )
+        if self.status != "RUNNING" or not nonzero_command:
+            self.commanded_motion_watch_active = False
+            return
+
+        if not getattr(self, "commanded_motion_watch_active", False):
+            self.commanded_motion_anchor_xy = xy
+            self.commanded_motion_anchor_yaw = yaw
+            self.commanded_motion_anchor_time = now
+            self.commanded_motion_watch_active = True
+            return
+
+        translation = math.hypot(
+            xy[0] - self.commanded_motion_anchor_xy[0],
+            xy[1] - self.commanded_motion_anchor_xy[1],
+        )
+        yaw_delta = abs(math.atan2(
+            math.sin(yaw - self.commanded_motion_anchor_yaw),
+            math.cos(yaw - self.commanded_motion_anchor_yaw),
+        ))
+        if (
+            translation >= self.limits.commanded_stuck_min_translation_m
+            or yaw_delta >= self.limits.commanded_stuck_min_yaw_rad
+        ):
+            self.commanded_motion_anchor_xy = xy
+            self.commanded_motion_anchor_yaw = yaw
+            self.commanded_motion_anchor_time = now
+            return
+
+        if now - self.commanded_motion_anchor_time >= self.limits.commanded_stuck_timeout_s:
+            self.recovery_events.append({
+                "time_s": now,
+                "event": "commanded_stuck",
+                "duration_s": now - self.commanded_motion_anchor_time,
+                "translation_m": translation,
+                "yaw_rad": yaw_delta,
+            })
+            self._stop("STUCK", "commanded_no_ground_truth_motion")
 
     def _update_contacts(self, now: float) -> None:
         wall = False
@@ -255,11 +317,18 @@ class Nav2MotionSession:
             "applied_command": asdict(self.last_command),
             "command_limiter": {
                 "max_forward_mps": self.limits.max_forward_mps,
+                "min_forward_mps": self.limits.min_forward_mps,
                 "max_reverse_mps": self.limits.max_reverse_mps,
                 "max_yaw_rate_radps": self.limits.max_yaw_rate_radps,
                 "turn_slowdown_start_radps": self.limits.turn_slowdown_start_radps,
                 "turn_slowdown_full_radps": self.limits.turn_slowdown_full_radps,
                 "turn_slowdown_min_forward_mps": self.limits.turn_slowdown_min_forward_mps,
+            },
+            "commanded_stuck_watchdog": {
+                "timeout_s": self.limits.commanded_stuck_timeout_s,
+                "min_translation_m": self.limits.commanded_stuck_min_translation_m,
+                "min_yaw_rad": self.limits.commanded_stuck_min_yaw_rad,
+                "active": self.commanded_motion_watch_active,
             },
             "achieved_velocity_ground_truth": asdict(self.achieved),
             "distance_traveled_m": self.distance_traveled_m,

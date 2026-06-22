@@ -60,11 +60,12 @@ def build_maze_world(
     seed: int,
     output_dir: Path,
     project_root: Path = PROJECT_ROOT,
+    maze: Maze | None = None,
 ) -> WorldBuildResult:
     """Generate a validated maze world XML and visible debug artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    maze = generate_maze_from_config(config, seed)
+    maze = maze if maze is not None else generate_maze_from_config(config, seed)
     validation = validate_maze(
         maze,
         safety_radius_m=float(config["robot"]["safety_radius_m"]),

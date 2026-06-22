@@ -2,9 +2,10 @@ SHELL := /bin/bash
 
 CONFIG ?= configs/default.yaml
 SEED ?= 123
-CELL_SIZE_M ?= $(if $(CORRIDOR_WIDTH),$(CORRIDOR_WIDTH),4.0)
+CELL_SIZE_M ?= $(if $(CORRIDOR_WIDTH),$(CORRIDOR_WIDTH),2.0)
 CELL_SIZE_MIN ?= 1.0
 CELL_SIZE_MAX ?= 4.0
+DEMO_CELL_SIZE_M ?= $(CELL_SIZE_M)
 RUN_ROOT ?= runs
 VISUAL_DIR ?= runs/visual
 ORACLE_DURATION ?= 300
@@ -34,6 +35,21 @@ NAVIGATE_SKIP_BUILD ?= false
 NAVIGATE_WITH_RVIZ ?= false
 NAVIGATE_WITH_MUJOCO ?= false
 NAVIGATE_DASHBOARD ?= true
+DASHBOARD_AUTO_OPEN ?= true
+NAVIGATE_LAUNCH_ARGS ?=
+ODOM_TUNE_RUN_ROOT ?= runs/odom_tuning
+ODOM_TUNE_DURATION ?= 240
+ODOM_TUNE_SEEDS ?= 123 81
+ODOM_TUNE_SKIP_PREBUILD ?= false
+RL_CONFIG ?= configs/rl_velocity_controller.yaml
+RL_RUN_ROOT ?= runs/rl_velocity
+RL_TIMESTEPS ?=
+RL_NUM_ENVS ?= 1
+RL_STAGE ?=
+RL_EVAL_EPISODES ?=
+RL_EVAL_SUITE ?=
+CHECKPOINT ?=
+VEC_NORMALIZE ?=
 HELDOUT_RUN_ROOT ?= runs/heldout-20
 HELDOUT_LABEL ?= held_out
 HELDOUT_JOBS ?= 1
@@ -48,8 +64,9 @@ export TMPDIR := $(abspath $(PROJECT_TMP))
 export REQUIRED_STORAGE_MOUNT
 export EXPECTED_STORAGE_UUID
 
-.PHONY: help storage-check setup install-torch-cpu docker-build docker-run docker-run-gui docker-check-ros docker-build-multiarch
+.PHONY: help storage-check setup install-torch-cpu install-rl-deps docker-build docker-run docker-run-gui docker-check-ros docker-build-multiarch
 .PHONY: fetch-unitree-rl-gym-policy fetch-m-explore prebuild prebuild-inner maze world oracle oracle-view oracle-inner slam slam-view slam-inner navigate navigate-view navigate-full-view demo navigate-inner heldout-navigate heldout-report bag-info clean
+.PHONY: odom-tune rl-train rl-eval rl-eval-corridor-sweep rl-replay
 
 help:
 	@printf '%s\n' \
@@ -58,16 +75,21 @@ help:
 		'  make docker-run                      # headless shell with ROS Humble' \
 		'  make docker-run-gui                  # GUI shell for RViz/MuJoCo viewer' \
 		'  make prebuild                        # fetch Unitree RL Gym + m-explore and build ROS workspace' \
-		'  make maze CELL_SIZE_M=4.0 SEED=123   # generate/validate square grid, 1-4 m cells' \
-		'  make world CELL_SIZE_M=4.0 SEED=123  # generate MuJoCo world with G1 + D435i + laser source' \
+		'  make maze CELL_SIZE_M=2.0 SEED=123   # generate/validate square grid, 1-4 m cells' \
+		'  make world CELL_SIZE_M=2.0 SEED=123  # generate MuJoCo world with G1 + D435i + laser source' \
 		'  make oracle SEED=123                 # Unitree RL Gym native oracle path following' \
 		'  make oracle-view SEED=123            # oracle path following with MuJoCo viewer' \
 		'  make slam SEED=123                   # oracle-driven SLAM with rosbag' \
 		'  make slam-view SEED=123              # SLAM with RViz' \
 		'  make navigate SEED=123               # SLAM + m-explore + Nav2 + rosbag' \
+		'  make odom-tune                       # sweep scan-odom params against offline ground-truth metrics' \
 		'  make navigate-view SEED=123          # navigation with RViz' \
 		'  make navigate-full-view SEED=123     # navigation with RViz + MuJoCo viewer' \
-		'  make demo SEED=123                   # interview demo: full-view navigation + live KPI dashboard' \
+		'  make demo SEED=123 DEMO_CELL_SIZE_M=2.0 # interview demo with full-view navigation + live KPI dashboard' \
+		'  make rl-train                        # direct MuJoCo PPO velocity-controller training' \
+		'  make rl-eval CHECKPOINT=...          # evaluate a trained PPO checkpoint' \
+		'  make rl-eval-corridor-sweep CHECKPOINT=... # 100 random mazes across 2-4 m corridors' \
+		'  make rl-replay CHECKPOINT=... SEED=123 # replay one trained PPO episode' \
 		'  make heldout-navigate                # run the fixed 20-seed headless held-out batch' \
 		'  make heldout-report                  # aggregate held-out solve rate with 95% CI'
 
@@ -87,6 +109,16 @@ install-torch-cpu:
 		"$(VENV_PYTHON)" -m pip install --target "$(PYTHON_PACKAGE_DIR)" "$(TORCH_CPU_PACKAGE)" --index-url "$(TORCH_CPU_INDEX)"; \
 	else \
 		"$(VENV_PYTHON)" -m pip install "$(TORCH_CPU_PACKAGE)" --index-url "$(TORCH_CPU_INDEX)"; \
+	fi
+
+install-rl-deps: install-torch-cpu
+	@if PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$$PYTHONPATH" "$(VENV_PYTHON)" -c "import gymnasium, stable_baselines3, tensorboard, mujoco, yaml, numpy" >/dev/null 2>&1; then \
+		echo "RL dependencies ok"; \
+	elif [ "$(VENV)" = "/usr" ]; then \
+		mkdir -p "$(PYTHON_PACKAGE_DIR)"; \
+		PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$$PYTHONPATH" "$(VENV_PYTHON)" -m pip install --target "$(PYTHON_PACKAGE_DIR)" -r requirements.txt -r requirements-rl.txt; \
+	else \
+		PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$$PYTHONPATH" "$(VENV_PYTHON)" -m pip install -r requirements.txt -r requirements-rl.txt; \
 	fi
 
 docker-build: storage-check
@@ -185,27 +217,27 @@ slam-inner: storage-check install-torch-cpu fetch-unitree-rl-gym-policy
 
 navigate: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)"; \
 	fi
 
 navigate-view: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)"; \
 	fi
 
 navigate-full-view: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
-		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
+		$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)"; \
 	else \
-		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)"; \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run_gui.sh make navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=true SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)"; \
 	fi
 
 demo: storage-check
-	@$(MAKE) navigate-full-view SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD=true DASHBOARD_PORT="$(DASHBOARD_PORT)"
+	@$(MAKE) navigate-full-view SEED="$(SEED)" CELL_SIZE_M="$(DEMO_CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD=true DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)"
 
 navigate-inner: storage-check
 	@test "$${ROS_DISTRO:-}" = "humble" || (echo "navigate-inner requires ROS 2 Humble" && exit 1)
@@ -214,7 +246,7 @@ navigate-inner: storage-check
 	if [ "$(NAVIGATE_DASHBOARD)" = "true" ]; then echo "Live KPI dashboard requested; the URL prints after the monitor HTTP server binds."; fi; \
 	if [ "$(NAVIGATE_SKIP_BUILD)" = "true" ]; then echo "Skipping prebuild; using existing ros_ws/install."; else $(MAKE) prebuild-inner; fi; \
 	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/characterize_nav_locomotion.py --output-dir "$$run_dir" --config "$(CONFIG)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)"; \
-	PYTHONPATH="$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/render_navigation_config.py --config "$(CONFIG)" --nav2-template ros_ws/src/g1_nav_bringup/config/nav2_exploration_params.yaml --calibration "$$run_dir/locomotion_calibration.json" --output-dir "$$run_dir"; \
+	PYTHONPATH="$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/render_navigation_config.py --config "$(CONFIG)" --nav2-template ros_ws/src/g1_nav_bringup/config/nav2_exploration_params.yaml --calibration "$$run_dir/locomotion_calibration.json" --output-dir "$$run_dir" --cell-size-m "$(CELL_SIZE_M)"; \
 	. ros_ws/install/setup.sh; \
 	torch_dir=$$(dirname "$$(ls "$(VENV)"/lib/python*/site-packages/torch/lib/libgomp.so.1 2>/dev/null | head -1)"); \
 	torch_preload=""; if [ -f "$$torch_dir/libgomp.so.1" ] && [ -f "$$torch_dir/libc10.so" ]; then torch_preload="$$torch_dir/libgomp.so.1:$$torch_dir/libc10.so"; fi; \
@@ -223,8 +255,29 @@ navigate-inner: storage-check
 	ros2 bag record --all --include-hidden-topics --output "$$bag_path" >"$$bag_log" 2>&1 & bag_pid=$$!; \
 	cleanup_bag() { if [ -n "$$bag_pid" ] && kill -0 "$$bag_pid" 2>/dev/null; then kill -INT "$$bag_pid"; wait "$$bag_pid" || true; fi; bag_pid=""; }; \
 	trap cleanup_bag EXIT INT TERM; \
-	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)" dashboard:="$(NAVIGATE_DASHBOARD)" dashboard_port:="$(DASHBOARD_PORT)"; \
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)" dashboard:="$(NAVIGATE_DASHBOARD)" dashboard_port:="$(DASHBOARD_PORT)" dashboard_auto_open:="$(DASHBOARD_AUTO_OPEN)" $(NAVIGATE_LAUNCH_ARGS); \
 	status=$$?; cleanup_bag; trap - EXIT INT TERM; python3 scripts/finalize_run_context.py "$$run_dir"; echo "Report: $$run_dir/dashboard.html"; exit $$status
+
+odom-tune: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		python3 scripts/tune_navigation_odometry.py --run-root "$(ODOM_TUNE_RUN_ROOT)" --cell-size-m "$(CELL_SIZE_M)" --duration "$(ODOM_TUNE_DURATION)" --config "$(CONFIG)" --seeds $(ODOM_TUNE_SEEDS) $(if $(filter true,$(ODOM_TUNE_SKIP_PREBUILD)),--skip-prebuild,); \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make odom-tune ODOM_TUNE_RUN_ROOT="$(ODOM_TUNE_RUN_ROOT)" CELL_SIZE_M="$(CELL_SIZE_M)" ODOM_TUNE_DURATION="$(ODOM_TUNE_DURATION)" CONFIG="$(CONFIG)" ODOM_TUNE_SEEDS="$(ODOM_TUNE_SEEDS)" ODOM_TUNE_SKIP_PREBUILD="$(ODOM_TUNE_SKIP_PREBUILD)"; \
+	fi
+
+rl-train: storage-check fetch-unitree-rl-gym-policy install-rl-deps
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/train_maze_velocity_policy.py --config "$(CONFIG)" --rl-config "$(RL_CONFIG)" --run-root "$(RL_RUN_ROOT)" --seed "$(SEED)" --num-envs "$(RL_NUM_ENVS)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)" $(if $(RL_TIMESTEPS),--total-timesteps "$(RL_TIMESTEPS)",) $(if $(RL_STAGE),--stage "$(RL_STAGE)",)
+
+rl-eval: storage-check fetch-unitree-rl-gym-policy install-rl-deps
+	@test -n "$(CHECKPOINT)" || (echo "Usage: make rl-eval CHECKPOINT=runs/rl_velocity/train/.../final_model.zip" && exit 1)
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/evaluate_maze_velocity_policy.py --checkpoint "$(CHECKPOINT)" --config "$(CONFIG)" --rl-config "$(RL_CONFIG)" --run-root "$(RL_RUN_ROOT)" --seed "$(SEED)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)" $(if $(RL_EVAL_EPISODES),--episodes "$(RL_EVAL_EPISODES)",) $(if $(RL_EVAL_SUITE),--episode-suite "$(RL_EVAL_SUITE)",) $(if $(VEC_NORMALIZE),--vec-normalize "$(VEC_NORMALIZE)",) $(if $(RL_STAGE),--stage "$(RL_STAGE)",)
+
+rl-eval-corridor-sweep:
+	@$(MAKE) rl-eval CHECKPOINT="$(CHECKPOINT)" VEC_NORMALIZE="$(VEC_NORMALIZE)" RL_EVAL_SUITE="configs/rl_velocity_eval_corridor_sweep_100.yaml" RL_EVAL_EPISODES=100 SEED="$(SEED)" CONFIG="$(CONFIG)" RL_CONFIG="$(RL_CONFIG)" RL_RUN_ROOT="$(RL_RUN_ROOT)" UNITREE_RL_GYM_REPO="$(UNITREE_RL_GYM_REPO)"
+
+rl-replay: storage-check fetch-unitree-rl-gym-policy install-rl-deps
+	@test -n "$(CHECKPOINT)" || (echo "Usage: make rl-replay CHECKPOINT=runs/rl_velocity/train/.../final_model.zip SEED=123" && exit 1)
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" "$(VENV_PYTHON)" scripts/replay_maze_velocity_policy.py --checkpoint "$(CHECKPOINT)" --config "$(CONFIG)" --rl-config "$(RL_CONFIG)" --run-root "$(RL_RUN_ROOT)" --seed "$(SEED)" --unitree-rl-gym-repo "$(UNITREE_RL_GYM_REPO)" $(if $(VEC_NORMALIZE),--vec-normalize "$(VEC_NORMALIZE)",) $(if $(RL_STAGE),--stage "$(RL_STAGE)",)
 
 heldout-navigate: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \

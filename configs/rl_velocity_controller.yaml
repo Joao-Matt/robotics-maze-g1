@@ -1,0 +1,105 @@
+rl_velocity_controller:
+  action_rate_hz: 10.0
+
+  command_limits:
+    vx_min_mps: -2.00
+    vx_max_mps: 2.00
+    vy_min_mps: -1.50
+    vy_max_mps: 1.50
+    yaw_rate_max_radps: 3.00
+
+  sensors:
+    ray_count: 36
+    ray_range_min_m: 0.10
+    ray_range_max_m: 8.0
+    ray_mount_pos_m: [0.05, 0.0, 0.30]
+
+  termination:
+    max_episode_time_s: 1200.0
+    goal_tolerance_m: 0.55
+    terminate_on_wall_contact: true
+    stuck_timeout_s: 6.0
+    stuck_min_progress_m: 0.02
+    spin_yaw_rate_radps: 0.75
+
+  rewards:
+    progress: 8.0
+    aligned_speed: 0.25
+    goal_bonus: 60.0
+    collision: 40.0
+    wall_contact: 8.0
+    fall: 50.0
+    tilt: 0.35
+    command_jerk: 0.05
+    spinning_without_progress: 0.08
+    stuck: 12.0
+    timeout: 8.0
+
+  ppo:
+    total_timesteps: 200000
+    n_steps: 512
+    batch_size: 256
+    learning_rate: 0.0003
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.005
+    vf_coef: 0.5
+    max_grad_norm: 0.5
+    policy_hidden_sizes: [256, 256]
+    checkpoint_freq: 25000
+    normalize_observations: true
+    normalize_rewards: true
+
+  evaluation:
+    episodes: 100
+    min_success_rate: 0.85
+    max_crash_or_fall_rate: 0.05
+
+  curriculum:
+    stages:
+      - name: straight_corridor
+        kind: straight_corridor
+        width_cells: 13
+        height_cells: 5
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: one_90_turn
+        kind: one_90_turn
+        width_cells: 9
+        height_cells: 9
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: s_turns
+        kind: s_turns
+        width_cells: 13
+        height_cells: 9
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: t_junctions
+        kind: t_junctions
+        width_cells: 13
+        height_cells: 13
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: full_small_maze
+        kind: full_small_maze
+        width_cells: 15
+        height_cells: 15
+        cell_size_m: 2.0
+        weight: 1.5
+      - name: larger_random_maze
+        kind: larger_random_maze
+        width_cells: 25
+        height_cells: 25
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: narrow_noisy_maze
+        kind: narrow_noisy_maze
+        width_cells: 21
+        height_cells: 21
+        cell_size_m: 1.2
+        weight: 0.75
+        scan_noise_std_m: 0.03
+        action_noise_std: 0.02
+        friction_range: [0.55, 1.10]

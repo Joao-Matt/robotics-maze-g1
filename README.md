@@ -75,7 +75,7 @@ make maze CELL_SIZE_M=4.0
 For compatibility with older command snippets, `CORRIDOR_WIDTH` is accepted as an alias:
 
 ```bash
-make navigate CELL_SIZE_M=4.0
+make navigate CELL_SIZE_M=2.0
 make navigate CORRIDOR_WIDTH=4.0
 ```
 
@@ -98,6 +98,41 @@ Run oracle path following with the Unitree RL Gym native policy:
 ```bash
 make oracle SEED=123 CELL_SIZE_M=4.0 ORACLE_DURATION=300
 ```
+
+Train the direct MuJoCo PPO velocity controller:
+
+```bash
+make rl-train SEED=123 RL_TIMESTEPS=200000 RL_NUM_ENVS=1
+```
+
+Evaluate and replay a trained checkpoint:
+
+```bash
+make rl-eval CHECKPOINT=runs/rl_velocity/train/<run>/final_model.zip
+make rl-replay CHECKPOINT=runs/rl_velocity/train/<run>/final_model.zip SEED=123
+```
+
+Run the fixed 100-episode random-maze corridor sweep on a trained checkpoint:
+
+```bash
+make rl-eval-corridor-sweep \
+  CHECKPOINT=runs/rl_velocity/train/<run>/final_model.zip \
+  VEC_NORMALIZE=runs/rl_velocity/train/<run>/vec_normalize.pkl
+```
+
+That suite is defined in
+[configs/rl_velocity_eval_corridor_sweep_100.yaml](configs/rl_velocity_eval_corridor_sweep_100.yaml).
+It evaluates 100 deterministic random mazes across 2.0, 2.5, 3.0,
+3.5, and 4.0 m corridors. Results are written under
+`runs/rl_velocity/eval/<timestamp>/`: `episode_metrics.csv` has the
+per-episode fields, and `grouped_summary.json` aggregates by stage,
+corridor width, failure status, and turn/straight failure phase.
+
+The RL controller runs without ROS/Nav2/RViz. It learns high-level
+`vx`, `vy`, and `yaw_rate` commands around the frozen Unitree RL Gym G1
+locomotion policy using oracle path features and MuJoCo wall raycasts.
+Configuration lives in [configs/rl_velocity_controller.yaml](configs/rl_velocity_controller.yaml);
+outputs are written under `runs/rl_velocity/`.
 
 Open the MuJoCo viewer for oracle mode:
 
@@ -132,7 +167,7 @@ make navigate-view SEED=123 CELL_SIZE_M=4.0
 Open RViz and the MuJoCo passive viewer:
 
 ```bash
-make navigate-full-view SEED=123 CELL_SIZE_M=4.0
+make navigate-full-view SEED=123 CELL_SIZE_M=2.0
 ```
 
 ## Interview Demo
@@ -140,10 +175,10 @@ make navigate-full-view SEED=123 CELL_SIZE_M=4.0
 Run the live interview demo with the seed provided in the interview:
 
 ```bash
-make demo SEED=<n> CELL_SIZE_M=4.0
+make demo SEED=123 DEMO_CELL_SIZE_M=2.0
 ```
 
-`make demo` is a thin wrapper around `make navigate-full-view`: it generates the fresh maze for the seed, runs the same MuJoCo + RViz + SLAM + `m-explore` + Nav2 stack, records the run, and forces the live KPI dashboard on. You can also pass `NAVIGATE_DURATION`, `DASHBOARD_PORT`, and `NAVIGATE_SKIP_BUILD`.
+`make demo` is a thin wrapper around `make navigate-full-view`: it generates the fresh maze for the seed, runs the same MuJoCo + RViz + SLAM + `m-explore` + Nav2 stack, records the run, and forces the live KPI dashboard on. You can also pass `CELL_SIZE_M` or `DEMO_CELL_SIZE_M`, plus `NAVIGATE_DURATION`, `DASHBOARD_PORT`, `DASHBOARD_AUTO_OPEN`, and `NAVIGATE_SKIP_BUILD`.
 
 Expected windows during the demo:
 
@@ -151,7 +186,7 @@ Expected windows during the demo:
 - RViz: map, scan, plan, frontiers, and trajectory.
 - Browser KPI dashboard: solve status, time-to-goal, collisions/stuck count, and capture health.
 
-Open the dashboard only after the `live_kpi_monitor` log prints the bound URL:
+The live KPI dashboard opens automatically in your browser after `live_kpi_monitor` binds the HTTP server. The browser tab/window is yours to close manually. If the browser does not open, use the bound URL printed in the log:
 
 ```text
 Live KPI dashboard: http://127.0.0.1:<port>/index.html
@@ -173,14 +208,15 @@ Disable it or move it to another port with:
 
 ```bash
 make navigate-full-view NAVIGATE_DASHBOARD=false
+make navigate-full-view DASHBOARD_AUTO_OPEN=false
 make navigate-full-view DASHBOARD_PORT=8770
 ```
 
 ## Deliverables Map
 
 - One-command setup: `make docker-build`, `make docker-run-gui`, then `make prebuild`.
-- Generate a maze by seed: `make maze SEED=<n> CELL_SIZE_M=4.0`.
-- Run one navigation episode/live demo: `make demo SEED=<n>`.
+- Generate a maze by seed: `make maze SEED=123 CELL_SIZE_M=2.0`.
+- Run one navigation episode/live demo: `make demo SEED=123`.
 - Collect data: navigation runs automatically write rosbag, manifest, summary, map images, trajectories, command CSV, localization CSV, and live KPI snapshots under `runs/navigate/seed-<n>/...`.
 - Reproduce the KPI report: `make heldout-navigate`, then `make heldout-report`.
 - Answer "would you trust this robot to run unsupervised?": use `runs/heldout-20/heldout_summary.html`, because that verdict needs many unseen seeds. The live demo answers "is this run solving cleanly right now?"
@@ -190,7 +226,7 @@ make navigate-full-view DASHBOARD_PORT=8770
 Run the fixed 20-seed held-out navigation batch headlessly:
 
 ```bash
-make heldout-navigate CELL_SIZE_M=4.0 NAVIGATE_DURATION=600
+make heldout-navigate CELL_SIZE_M=2.0 NAVIGATE_DURATION=600
 ```
 
 This writes per-seed runs under:
@@ -283,8 +319,9 @@ Navigation mode:
 MuJoCo G1 + sensors
   -> /scan + D435i/Livox scan odometry
   -> slam_toolbox
-  -> /map
+  -> /map + map-frame /pose
   -> m-explore frontiers
+  -> map/SLAM-pose fallback goals when exploration is idle
   -> Nav2 NavigateToPose
   -> /cmd_vel
   -> Unitree RL Gym native policy
@@ -292,6 +329,19 @@ MuJoCo G1 + sensors
 ```
 
 `navigate`, `navigate-view`, and `navigate-full-view` do not use MuJoCo ground-truth pose for navigation. The active `/odom` source is `d435i_scan_odometry`, and MuJoCo `/ground_truth/odom` is recorded only for offline comparison and dashboard metrics.
+Generated maze/oracle paths are evaluation references only; live navigation goal producers must not read them or publish goals from them.
+
+Tune the odometry stack over repeated maze runs:
+
+```bash
+make odom-tune ODOM_TUNE_SEEDS="123 81" ODOM_TUNE_DURATION=240
+```
+
+This runs several scan-odometry launch-argument candidates, then scores each run against `localization_evaluation_ground_truth_only` in the generated summaries. Ground truth is used only after each run for scoring, not as an online navigation input. Pass custom launch arguments to one run with `NAVIGATE_LAUNCH_ARGS`, for example:
+
+```bash
+make navigate NAVIGATE_LAUNCH_ARGS="scan_maximum_points:=260 icp_min_inlier_ratio:=0.18"
+```
 
 ## Outputs
 

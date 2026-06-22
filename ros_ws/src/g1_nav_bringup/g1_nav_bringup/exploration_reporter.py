@@ -8,13 +8,14 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, TwistStamped
 from explore_lite_msgs.msg import ExploreStatus
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
 from rclpy.node import Node
 from rosgraph_msgs.msg import Clock as ClockMessage
 from std_msgs.msg import String
 
+from g1_nav_bringup.run_termination import is_run_success_status, is_terminal_run_status, run_duration_s, termination_source
 from sim.mujoco_runner import _write_png
 from sim.run_context import finalize_manifest
 from sim.config import load_config
@@ -44,21 +45,26 @@ def _stamp(stamp):return float(stamp.sec)+float(stamp.nanosec)*1e-9
 class ExplorationReporter(Node):
     def __init__(self):
         super().__init__("exploration_reporter")
-        for name,default in (("output_dir","/workspace/runs"),("live_visual_dir",""),("seed",123),("duration_s",600.0),("corridor_width_m",2.0),("config_path","/workspace/configs/default.yaml"),("m_explore_complete_terminal",True)):
+        for name,default in (("output_dir","/workspace/runs"),("live_visual_dir",""),("seed",123),("duration_s",600.0),("corridor_width_m",2.0),("config_path","/workspace/configs/default.yaml"),("m_explore_complete_terminal",False),("goal_reached_tolerance_m",0.5)):
             self.declare_parameter(name,default)
         self.out=Path(str(self.get_parameter("output_dir").value)); self.out.mkdir(parents=True,exist_ok=True)
+        self.duration_s=run_duration_s(self.out,self.get_parameter("duration_s").value)
         live=str(self.get_parameter("live_visual_dir").value); self.live=Path(live) if live else None
         self.seed=int(self.get_parameter("seed").value); self.map=None; self.exploration={}; self.motion={}; self.odom_quality={}; self.done=False
         self.started_at=self._now(); self.clock_start_sim=None; self.clock_last_sim=None; self.clock_start_wall=None; self.first_map_time=None; self.known_cell_growth=[]
         config=load_config(str(self.get_parameter("config_path").value)); corridor_width=float(self.get_parameter("corridor_width_m").value); config["maze"]["cell_size_m"]=corridor_width; config["maze"]["cell_width_m"]=corridor_width; config["maze"]["cell_length_m"]=corridor_width
-        self.maze=generate_maze_from_config(config,self.seed); self.spawn_yaw=float(config.get("nav2_navigation",{}).get("initial_spawn_yaw_rad",0.0)); self.start_world=cell_to_world_xy(self.maze,self.maze.spec.start_cell)
+        self.maze=generate_maze_from_config(config,self.seed); self.spawn_yaw=float(config.get("nav2_navigation",{}).get("initial_spawn_yaw_rad",0.0)); self.start_world=cell_to_world_xy(self.maze,self.maze.spec.start_cell); self.goal_world=cell_to_world_xy(self.maze,self.maze.spec.goal_cell); self.goal_estimated_xy=self._world_to_start_relative(self.goal_world)
         self.raw=[]; self.applied=[]; self.measured=[]; self.actual=[]; self.actual_odom=[]; self.odom=[]; self.odom_eval=[]; self.actual_eval=[]; self.paths=[]
+        self.robot_goal_error_m=None; self.robot_goal_reached=False; self.robot_goal_reached_source=None; self.robot_estimated_pose_xy=None; self.robot_estimated_pose_source=None
+        self.slam_pose_xy=None; self.slam_pose_goal_error_m=None; self.odom_pose_xy=None; self.odom_goal_error_m=None
+        self.slam_pose_samples=0
         self.frontier_goal=self.marker_goal=self.fallback_goal=None; self.trajectory_pub=self.create_publisher(NavPath,"/exploration/trajectory",10); self.truth_trajectory_pub=self.create_publisher(NavPath,"/ground_truth/trajectory",10)
         self.create_subscription(ClockMessage,"/clock",self._clock_message,10)
         self.create_subscription(OccupancyGrid,"/map",self._map,10)
         self.create_subscription(Twist,"/cmd_vel",lambda m:self.raw.append((self._now(),m.linear.x,m.angular.z)),50)
         self.create_subscription(TwistStamped,"/applied_cmd_vel",lambda m:self.applied.append((_stamp(m.header.stamp),m.twist.linear.x,m.twist.angular.z)),50)
         self.create_subscription(Odometry,"/odom",self._odom,50)
+        self.create_subscription(PoseWithCovarianceStamped,"/pose",self._slam_pose,50)
         self.create_subscription(TwistStamped,"/ground_truth/achieved_velocity",lambda m:self.measured.append((_stamp(m.header.stamp),m.twist.linear.x,m.twist.angular.z)),50)
         self.create_subscription(Odometry,"/ground_truth/odom",self._actual,50)
         self.create_subscription(NavPath,"/plan",lambda m:self.paths.append([(p.pose.position.x,p.pose.position.y) for p in m.poses]),20)
@@ -70,7 +76,7 @@ class ExplorationReporter(Node):
         self.create_subscription(ExploreStatus,"/explore/status",self._m_explore,20)
         self.create_subscription(String,"/odometry/d435i_status",self._odom_status,20)
         self.create_timer(.5,self._live_plot)
-        self.create_timer(float(self.get_parameter("duration_s").value),lambda:self._finish("TIMEOUT"))
+        self.create_timer(self.duration_s,lambda:self._finish("TIMEOUT"))
     def _now(self):return self.get_clock().now().nanoseconds*1e-9
     def _clock_message(self,msg):
         now=_stamp(msg.clock)
@@ -80,6 +86,8 @@ class ExplorationReporter(Node):
     def _odom(self,msg):
         self.odom.append((_stamp(msg.header.stamp),msg.pose.pose.position.x,msg.pose.pose.position.y,msg.twist.twist.linear.x,msg.twist.twist.angular.z))
         self.odom_eval.append((_stamp(msg.header.stamp),msg.pose.pose.position.x,msg.pose.pose.position.y,self._yaw(msg.pose.pose.orientation)))
+        self.odom_pose_xy=(float(msg.pose.pose.position.x),float(msg.pose.pose.position.y)); self.odom_goal_error_m=self._estimated_goal_error(self.odom_pose_xy)
+        if self.slam_pose_xy is None:self._check_robot_goal_reached(self.odom_pose_xy,"odom")
         path=NavPath(); path.header=msg.header; path.header.frame_id="odom"
         for _,x,y,_,_ in self.odom[-2000:]:
             pose=PoseStamped(); pose.header=path.header; pose.pose.position.x=x; pose.pose.position.y=y; pose.pose.orientation.w=1.0; path.poses.append(pose)
@@ -94,6 +102,15 @@ class ExplorationReporter(Node):
         self.truth_trajectory_pub.publish(path)
     @staticmethod
     def _yaw(q):return math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+    def _slam_pose(self,msg):
+        p=msg.pose.pose.position; self.slam_pose_samples+=1; self.slam_pose_xy=(float(p.x),float(p.y)); self.slam_pose_goal_error_m=self._estimated_goal_error(self.slam_pose_xy); self._check_robot_goal_reached(self.slam_pose_xy,"slam_pose")
+    def _estimated_goal_error(self,point):
+        return math.hypot(float(point[0])-self.goal_estimated_xy[0],float(point[1])-self.goal_estimated_xy[1])
+    def _check_robot_goal_reached(self,point,source):
+        error=self._estimated_goal_error(point)
+        self.robot_goal_error_m=error; self.robot_estimated_pose_xy=(float(point[0]),float(point[1])); self.robot_estimated_pose_source=source
+        if not self.done and error<=float(self.get_parameter("goal_reached_tolerance_m").value):
+            self.robot_goal_reached=True; self.robot_goal_reached_source=source; self._finish("GOAL_REACHED")
     def _world_to_start_relative(self,point):
         dx,dy=point[0]-self.start_world[0],point[1]-self.start_world[1]; c,s=math.cos(self.spawn_yaw),math.sin(self.spawn_yaw)
         return c*dx+s*dy,-s*dx+c*dy
@@ -122,19 +139,16 @@ class ExplorationReporter(Node):
         try:self.motion=json.loads(msg.data)
         except Exception:self.motion={"status":msg.data}
         status=str(self.motion.get("status",""))
-        if status in {"COLLISION_ABORT","FALL_DETECTED","FAILED","NAV2_ABORTED","COMMAND_TIMEOUT","ZERO_COMMAND_TIMEOUT","STUCK","TIMEOUT"}:self._finish(status)
+        if is_terminal_run_status(status):self._finish(status)
     def _odom_status(self,msg):
         try:self.odom_quality=json.loads(msg.data)
         except Exception:self.odom_quality={"status":msg.data}
     def _exploration(self,msg):
         try:self.exploration=json.loads(msg.data)
         except Exception:self.exploration={"status":msg.data}
-        if self.exploration.get("status") not in ACTIVE:self._finish(str(self.exploration.get("status","FAILED")))
+        if is_terminal_run_status(self.exploration.get("status","")):self._finish(str(self.exploration.get("status","")))
     def _m_explore(self,msg):
         status=str(msg.status); self.exploration={"algorithm":"m-explore-ros2","status":status}
-        if status==ExploreStatus.EXPLORATION_COMPLETE:
-            if bool(self.get_parameter("m_explore_complete_terminal").value):self._finish("EXPLORATION_COMPLETE")
-        elif status==ExploreStatus.RETURNED_TO_ORIGIN:self._finish("RETURNED_TO_ORIGIN")
     def _map_pixels(self,overlay=True):
         if self.map is None:return np.full((480,640,3),205,np.uint8)
         a=np.asarray(self.map.data,dtype=np.int16).reshape(self.map.info.height,self.map.info.width); g=np.full(a.shape,205,np.uint8); g[a==0]=254; g[a>=65]=0; image=np.repeat(np.flipud(g)[:,:,None],3,axis=2)
@@ -235,12 +249,14 @@ class ExplorationReporter(Node):
         if status=="RUNNING":status="INTERRUPTED"
         physical_goal_error=None
         maze_goal_reached=False
-        goal=cell_to_world_xy(self.maze,self.maze.spec.goal_cell)
+        robot_vs_ground_truth_pose_error=None
+        goal=self.goal_world
         if self.actual:
             physical_goal_error=math.hypot(self.actual[-1][1]-goal[0],self.actual[-1][2]-goal[1])
             maze_goal_reached=physical_goal_error<=0.5
-        if status=="GOAL_REACHED" and physical_goal_error is not None:
-            if physical_goal_error>.5:status="GOAL_SENSOR_PHYSICAL_DISAGREEMENT"
+            if self.robot_estimated_pose_xy is not None and self.actual_odom:
+                truth_xy=(self.actual_odom[-1][1],self.actual_odom[-1][2])
+                robot_vs_ground_truth_pose_error=math.hypot(self.robot_estimated_pose_xy[0]-truth_xy[0],self.robot_estimated_pose_xy[1]-truth_xy[1])
         paths={name:self.out/name for name in ("summary.json","dashboard.html","map.png","map.pgm","map.yaml","ground_truth_map.png","ground_truth_map.pgm","ground_truth_map.yaml","slam_vs_maze.png","trajectory.svg","command_timeline.svg","cmd_vel.csv","localization_comparison.csv")}
         pixels=self._map_pixels(); _write_png(paths["map.png"],pixels)
         gray=self._map_pixels(False)[:,:,0]; paths["map.pgm"].write_bytes(f"P5\n{gray.shape[1]} {gray.shape[0]}\n255\n".encode()+gray.tobytes())
@@ -261,10 +277,10 @@ class ExplorationReporter(Node):
         distance=sum(math.hypot(self.actual[i][1]-self.actual[i-1][1],self.actual[i][2]-self.actual[i-1][2]) for i in range(1,len(self.actual)))
         progress=self._path_progress(distance)
         localization=self._localization_metrics(paths["localization_comparison.csv"])
-        completed=status in {"GOAL_REACHED","EXPLORATION_COMPLETE","RETURNED_TO_ORIGIN","exploration_complete","returned_to_origin"}
+        completed=is_run_success_status(status)
         wall_elapsed=max(1e-9,time.monotonic()-(self.clock_start_wall or time.monotonic()))
         sim_elapsed=max(0.0,(self.clock_last_sim or self._now())-(self.clock_start_sim or 0.0))
-        terminal_source="m-explore_frontier_status" if status in {"EXPLORATION_COMPLETE","RETURNED_TO_ORIGIN","exploration_complete","returned_to_origin"} else "navigation_or_safety_status"
+        terminal_source=termination_source(status)
         artifacts={k:str(v) for k,v in paths.items()}
         live_dashboard=self.out/"live_dashboard"
         if live_dashboard.is_dir():
@@ -272,7 +288,7 @@ class ExplorationReporter(Node):
             for name in ("kpis.latest.json","kpi_stream.ndjson","events.ndjson","timeseries_downsampled.csv","map_thumb.png"):
                 path=live_dashboard/name
                 if path.exists():artifacts[f"live_{path.stem.replace('.','_')}"]=str(path)
-        summary={"status":"completed" if completed else "failed","phase":6,"seed":self.seed,"final_status":status,"termination_source":terminal_source,"goal_source":"m-explore_frontiers_not_generated_maze_goal","generated_maze_goal_world_xy":[goal[0],goal[1]],"maze_goal_reached":maze_goal_reached,"physical_goal_error_m":physical_goal_error,"loaded_map":False,"slam_mode":"livox_mid360_slam_toolbox_with_sensor_odometry","ground_truth_used_for_navigation":False,"ground_truth_usage":"evaluation_and_comparison_only","odometry_source":"d435i_scan_odometry_livox_scan_imu_cmd_prediction","mapping_sensor":"simulated_livox_mid360_360_degree_laserscan","exploration_algorithm":"m-explore-ros2","odometry_quality":self.odom_quality or {"source":"d435i_scan_odometry","ground_truth":False},"sim_elapsed_s":sim_elapsed,"wall_elapsed_s":wall_elapsed,"realtime_factor":sim_elapsed/wall_elapsed,"known_cells_initial":known_start,"known_cells_final":known_end,"distance_traveled_m":distance,**progress,"exploration":self.exploration,"motion":self.motion,"samples":{"nav2_commands":len(self.raw),"applied_commands":len(self.applied),"navigation_odom":len(self.odom),"ground_truth_evaluation":len(self.actual)},"artifacts":artifacts}
+        summary={"status":"completed" if completed else "failed","phase":6,"seed":self.seed,"final_status":status,"termination_source":terminal_source,"timeout_limit_s":self.duration_s,"duration_limit_s":self.duration_s,"goal_source":"robot_estimated_pose_reaches_generated_maze_goal","generated_maze_goal_world_xy":[goal[0],goal[1]],"generated_maze_goal_estimated_xy":[self.goal_estimated_xy[0],self.goal_estimated_xy[1]],"robot_goal_reached":self.robot_goal_reached,"robot_goal_reached_source":self.robot_goal_reached_source,"robot_estimated_pose_source":self.robot_estimated_pose_source,"robot_goal_error_m":self.robot_goal_error_m,"robot_estimated_pose_xy":list(self.robot_estimated_pose_xy) if self.robot_estimated_pose_xy is not None else None,"slam_pose_xy":list(self.slam_pose_xy) if self.slam_pose_xy is not None else None,"slam_pose_goal_error_m":self.slam_pose_goal_error_m,"odom_pose_xy":list(self.odom_pose_xy) if self.odom_pose_xy is not None else None,"odom_goal_error_m":self.odom_goal_error_m,"ground_truth_pose_estimated_frame_xy":[self.actual_odom[-1][1],self.actual_odom[-1][2]] if self.actual_odom else None,"robot_vs_ground_truth_pose_error_m":robot_vs_ground_truth_pose_error,"maze_goal_reached":maze_goal_reached,"physical_goal_error_m":physical_goal_error,"loaded_map":False,"slam_mode":"livox_mid360_slam_toolbox_with_sensor_odometry","ground_truth_used_for_navigation":False,"ground_truth_usage":"evaluation_and_comparison_only","odometry_source":"d435i_scan_odometry_livox_scan_imu_cmd_prediction","mapping_sensor":"simulated_livox_mid360_360_degree_laserscan","exploration_algorithm":"m-explore-ros2","odometry_quality":self.odom_quality or {"source":"d435i_scan_odometry","ground_truth":False},"sim_elapsed_s":sim_elapsed,"wall_elapsed_s":wall_elapsed,"realtime_factor":sim_elapsed/wall_elapsed,"known_cells_initial":known_start,"known_cells_final":known_end,"distance_traveled_m":distance,**progress,"exploration":self.exploration,"motion":self.motion,"samples":{"nav2_commands":len(self.raw),"applied_commands":len(self.applied),"navigation_odom":len(self.odom),"slam_pose_estimates":self.slam_pose_samples,"ground_truth_evaluation":len(self.actual)},"artifacts":artifacts}
         summary["mapping"]={"first_map_time_s":self.first_map_time,"known_cell_growth":self.known_cell_growth,"coverage_fraction":known_end/max(1,len(self.map.data)) if self.map else 0.0,"nav2_plan_updates":len(self.paths)}
         summary["mapping"]["ground_truth_comparison"]=comparison
         summary["localization_evaluation_ground_truth_only"]=localization

@@ -9,16 +9,13 @@ import time
 import rclpy
 from action_msgs.msg import GoalStatus
 from explore_lite_msgs.msg import ExploreStatus
-from geometry_msgs.msg import PoseStamped
-from maze.generator import generate_maze_from_config
-from nav.planner import PlanningError, plan_oracle_path
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from g1_nav_bringup.corridor_recenter import select_corridor_center_goal
 from nav2_msgs.action import NavigateToPose
-from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
+from nav_msgs.msg import OccupancyGrid, Path as NavPath
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
-from sim.config import load_config
-from sim.world_builder import cell_to_world_xy
 from std_msgs.msg import Bool, String
 
 
@@ -33,14 +30,10 @@ class MazeFallbackGoal(Node):
     def __init__(self):
         super().__init__("maze_fallback_goal")
         for name, default in (
-            ("seed", 123),
-            ("config_path", "/workspace/configs/default.yaml"),
-            ("corridor_width_m", 2.0),
             ("activation_delay_s", 2.0),
             ("retry_delay_s", 2.0),
             ("goal_refresh_s", 4.0),
-            ("maze_path_goal_refresh_s", 10.0),
-            ("m_explore_max_active_s", 0.0),
+            ("m_explore_max_active_s", 45.0),
             ("min_goal_distance_m", 3.2),
             ("goal_lookahead_m", 3.8),
             ("min_goal_clearance_m", 1.05),
@@ -53,16 +46,18 @@ class MazeFallbackGoal(Node):
             ("plan_heading_max_age_s", 8.0),
             ("motion_heading_window_s", 4.0),
             ("min_motion_heading_m", 0.25),
-            ("maze_goal_fallback_enabled", True),
             ("resume_m_explore_after_fallback", False),
-            ("maze_goal_reached_m", 0.75),
-            ("maze_goal_overshoot_m", 0.35),
+            ("m_explore_reset_on_complete", True),
+            ("recenter_on_explore_complete", True),
+            ("recenter_search_radius_m", 4.0),
+            ("recenter_candidate_step_m", 0.20),
+            ("recenter_min_clearance_m", 0.75),
+            ("recenter_min_step_m", 0.20),
+            ("recenter_goal_timeout_s", 12.0),
         ):
             self.declare_parameter(name, default)
-        self.maze_path = []
-        self.maze_goal = self._load_maze_goal()
-        self.odom = None
-        self.odom_history = []
+        self.map_pose = None
+        self.pose_history = []
         self.map = None
         self.last_plan = []
         self.last_plan_wall = 0.0
@@ -78,7 +73,9 @@ class MazeFallbackGoal(Node):
         self.current_goal_clearance = None
         self.goal_handle = None
         self.goal_active = False
-        self.goal_reached = False
+        self.recovery_pending = False
+        self.recovery_attempts = 0
+        self.recovery_note = None
         self.events = []
         self.navigate = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.resume_pub = self.create_publisher(Bool, "/explore/resume", 10)
@@ -86,7 +83,7 @@ class MazeFallbackGoal(Node):
         self.goal_pub = self.create_publisher(PoseStamped, "/exploration/fallback_goal", 10)
         status_qos = QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(ExploreStatus, "/explore/status", self._explore_status, status_qos)
-        self.create_subscription(Odometry, "/odom", self._odom, 20)
+        self.create_subscription(PoseWithCovarianceStamped, "/pose", self._slam_pose, 20)
         self.create_subscription(NavPath, "/plan", self._plan, 10)
         self.create_subscription(OccupancyGrid, "/map", lambda msg: setattr(self, "map", msg), 10)
         self.create_timer(1.0, self._tick)
@@ -100,6 +97,8 @@ class MazeFallbackGoal(Node):
             self.explore_active_since_wall = now
         elif status not in ACTIVE_EXPLORE_STATUSES:
             self.explore_active_since_wall = None
+        if status == ExploreStatus.EXPLORATION_COMPLETE:
+            self._schedule_explore_complete_recovery(now)
         if (
             status in ACTIVE_EXPLORE_STATUSES
             and not self._m_explore_timed_out(now)
@@ -118,6 +117,24 @@ class MazeFallbackGoal(Node):
             self.events.append({"event": "m_explore_watchdog_takeover", "status": self.last_explore_status})
         status = "FALLBACK_OVERRIDING_M_EXPLORE" if explore_timed_out else "FALLBACK_WAITING_M_EXPLORE" if explore_active else "FALLBACK_NAVIGATING" if self.goal_active else "FALLBACK_WAITING"
         self._publish_status(status)
+        if self.goal_active and self.current_goal_kind == "explore_complete_recenter":
+            timeout = float(self.get_parameter("recenter_goal_timeout_s").value)
+            if timeout > 0.0 and now - self.last_goal_sent_wall >= timeout:
+                self.events.append({"event": "explore_complete_recenter_timeout", "goal": self.current_goal})
+                if self.goal_handle is not None:
+                    self.goal_handle.cancel_goal_async()
+                self.goal_active = False
+                self.goal_handle = None
+                self.last_goal_end_wall = now
+                self._finish_explore_complete_recovery("recenter_timeout")
+            return
+        if self.recovery_pending:
+            if self.goal_active:
+                return
+            if now - self.last_goal_end_wall < float(self.get_parameter("retry_delay_s").value):
+                return
+            self._send_explore_complete_recenter_goal()
+            return
         if (explore_active and not explore_timed_out) or self.goal_active:
             if (
                 self.goal_active
@@ -136,10 +153,6 @@ class MazeFallbackGoal(Node):
             return
         if now - self.last_goal_end_wall < float(self.get_parameter("retry_delay_s").value):
             return
-        if self._maze_goal_reached():
-            self.goal_reached = True
-            self._publish_status("GOAL_REACHED")
-            return
         self._send_next_goal()
 
     def _send_next_goal(self):
@@ -148,8 +161,11 @@ class MazeFallbackGoal(Node):
         goal_xy, cell, kind = self._next_goal()
         if goal_xy is None:
             return False
+        return self._send_navigation_goal(goal_xy, cell, kind)
+
+    def _send_navigation_goal(self, goal_xy, cell, kind, yaw=None):
         goal = NavigateToPose.Goal()
-        goal.pose = self._pose(*goal_xy)
+        goal.pose = self._pose(*goal_xy, yaw=yaw)
         self.current_goal = goal_xy
         self.current_cell = cell
         self.current_goal_kind = kind
@@ -167,6 +183,64 @@ class MazeFallbackGoal(Node):
         })
         self.navigate.send_goal_async(goal).add_done_callback(self._goal_response)
         return True
+
+    def _schedule_explore_complete_recovery(self, now):
+        if not (
+            bool(self.get_parameter("m_explore_reset_on_complete").value)
+            or bool(self.get_parameter("recenter_on_explore_complete").value)
+        ):
+            return
+        if self.recovery_pending or (self.goal_active and self.current_goal_kind == "explore_complete_recenter"):
+            return
+        self.recovery_pending = True
+        self.recovery_attempts += 1
+        self.recovery_note = "If reset/recenter still cannot find new frontiers, try respawning only explore_node."
+        self.events.append({
+            "event": "m_explore_complete_recovery_scheduled",
+            "attempt": self.recovery_attempts,
+            "reminder": self.recovery_note,
+        })
+        if self.goal_active and self.goal_handle is not None:
+            self.events.append({"event": "cancel_for_m_explore_recovery", "goal": self.current_goal, "kind": self.current_goal_kind})
+            self.goal_handle.cancel_goal_async()
+            self.goal_active = False
+            self.goal_handle = None
+            self.last_goal_end_wall = now
+
+    def _send_explore_complete_recenter_goal(self):
+        if not bool(self.get_parameter("recenter_on_explore_complete").value):
+            self._finish_explore_complete_recovery("recenter_disabled")
+            return True
+        if self.map is None or self.map_pose is None:
+            return False
+        if not self.navigate.wait_for_server(timeout_sec=0.2):
+            return False
+        current = self._current_xy()
+        goal = self._recenter_goal(current)
+        if goal is None:
+            self.events.append({"event": "explore_complete_recenter_unavailable"})
+            self._finish_explore_complete_recovery("no_recenter_candidate")
+            return True
+        yaw = math.atan2(goal.y - current[1], goal.x - current[0])
+        self.current_heading_source = "slam_corridor_center"
+        self.current_goal_clearance = goal.clearance_m
+        self.events.append({
+            "event": "explore_complete_recenter_selected",
+            "goal": [goal.x, goal.y],
+            "clearance_m": goal.clearance_m,
+            "distance_m": goal.distance_m,
+        })
+        return self._send_navigation_goal((goal.x, goal.y), None, "explore_complete_recenter", yaw=yaw)
+
+    def _finish_explore_complete_recovery(self, reason):
+        self.recovery_pending = False
+        self.events.append({
+            "event": "m_explore_reset_resume",
+            "reason": reason,
+            "reminder": self.recovery_note,
+        })
+        if bool(self.get_parameter("m_explore_reset_on_complete").value):
+            self.resume_pub.publish(Bool(data=True))
 
     def _m_explore_timed_out(self, now=None):
         limit = float(self.get_parameter("m_explore_max_active_s").value)
@@ -193,8 +267,11 @@ class MazeFallbackGoal(Node):
             self._finish_goal("result_error", {"error": str(exc)})
             return
         label = "succeeded" if status == GoalStatus.STATUS_SUCCEEDED else "ended"
+        kind = self.current_goal_kind
         self._finish_goal(label, {"action_status": status})
-        if bool(self.get_parameter("resume_m_explore_after_fallback").value):
+        if kind == "explore_complete_recenter":
+            self._finish_explore_complete_recovery(label)
+        elif bool(self.get_parameter("resume_m_explore_after_fallback").value):
             self.resume_pub.publish(Bool(data=True))
 
     def _finish_goal(self, event, extra):
@@ -213,20 +290,35 @@ class MazeFallbackGoal(Node):
         self.last_goal_end_wall = time.monotonic()
 
     def _current_goal_refresh_s(self):
-        if self.current_goal_kind in {"maze_path_probe", "maze_goal_probe"}:
-            return float(self.get_parameter("maze_path_goal_refresh_s").value)
         return float(self.get_parameter("goal_refresh_s").value)
 
     def _next_goal(self):
         current = self._current_xy()
         if self.map is not None and current is not None:
-            goal = self._next_maze_goal_probe(current)
-            if goal[0] is not None:
-                return goal
             goal = self._next_unknown_edge_goal(current)
             if goal[0] is not None:
                 return goal
         return None, None, None
+
+    def _recenter_goal(self, current):
+        if current is None or self.map is None:
+            return None
+        info = self.map.info
+        return select_corridor_center_goal(
+            self.map.data,
+            int(info.width),
+            int(info.height),
+            float(info.resolution),
+            float(info.origin.position.x),
+            float(info.origin.position.y),
+            current,
+            search_radius_m=float(self.get_parameter("recenter_search_radius_m").value),
+            candidate_step_m=float(self.get_parameter("recenter_candidate_step_m").value),
+            clearance_radius_m=float(self.get_parameter("clearance_check_radius_m").value),
+            clearance_sample_step_m=float(self.get_parameter("clearance_sample_step_m").value),
+            min_clearance_m=float(self.get_parameter("recenter_min_clearance_m").value),
+            min_step_m=float(self.get_parameter("recenter_min_step_m").value),
+        )
 
     def _next_unknown_edge_goal(self, current):
         yaw, heading_source = self._preferred_yaw(current)
@@ -285,78 +377,6 @@ class MazeFallbackGoal(Node):
             return None, None, None
         return point, None, best[2]
 
-    def _next_maze_goal_probe(self, current):
-        if not bool(self.get_parameter("maze_goal_fallback_enabled").value) or self.maze_goal is None:
-            return None, None, None
-        path_goal = self._next_maze_path_probe(current)
-        if path_goal[0] is not None:
-            return path_goal
-        dx, dy = self.maze_goal[0] - current[0], self.maze_goal[1] - current[1]
-        distance = math.hypot(dx, dy)
-        if distance <= float(self.get_parameter("maze_goal_reached_m").value):
-            return None, None, None
-        lookahead = float(self.get_parameter("goal_lookahead_m").value)
-        minimum = float(self.get_parameter("min_goal_distance_m").value)
-        overshoot = float(self.get_parameter("maze_goal_overshoot_m").value)
-        direction = dx / distance, dy / distance
-        target_distance = min(lookahead, distance)
-        if distance < minimum:
-            # Nav2's exploration goal checker is intentionally loose. Aim just
-            # past the red goal so "within tolerance" still pulls the robot
-            # close to the actual marker instead of stopping several meters out.
-            target_distance = min(lookahead, minimum + overshoot)
-        point = (current[0] + direction[0] * target_distance, current[1] + direction[1] * target_distance)
-        point = self._clear_goal_toward(current, point)
-        if point is None:
-            return None, None, None
-        self.current_heading_source = "maze_goal"
-        return (float(point[0]), float(point[1])), None, "maze_goal_probe"
-
-    def _next_maze_path_probe(self, current):
-        if len(self.maze_path) < 2:
-            return None, None, None
-        lookahead = float(self.get_parameter("goal_lookahead_m").value)
-        minimum = float(self.get_parameter("min_goal_distance_m").value)
-        index = self._nearest_maze_path_index(current)
-        if index is None:
-            return None, None, None
-
-        target = self.maze_path[-1]
-        travelled = 0.0
-        previous = current
-        for point in self.maze_path[index + 1 :]:
-            segment = math.hypot(point[0] - previous[0], point[1] - previous[1])
-            if travelled + segment >= lookahead:
-                ratio = 0.0 if segment <= 0.0 else (lookahead - travelled) / segment
-                target = (
-                    previous[0] + (point[0] - previous[0]) * ratio,
-                    previous[1] + (point[1] - previous[1]) * ratio,
-                )
-                break
-            travelled += segment
-            previous = point
-
-        distance = math.hypot(target[0] - current[0], target[1] - current[1])
-        if distance < minimum and index + 1 < len(self.maze_path):
-            for point in self.maze_path[index + 1 :]:
-                if math.hypot(point[0] - current[0], point[1] - current[1]) >= minimum:
-                    target = point
-                    break
-
-        target = self._clear_goal_toward(current, target)
-        if target is None:
-            return None, None, None
-        self.current_heading_source = "maze_path"
-        return (float(target[0]), float(target[1])), None, "maze_path_probe"
-
-    def _nearest_maze_path_index(self, current):
-        if not self.maze_path:
-            return None
-        return min(
-            range(len(self.maze_path)),
-            key=lambda index: math.hypot(self.maze_path[index][0] - current[0], self.maze_path[index][1] - current[1]),
-        )
-
     def _preferred_yaw(self, current):
         plan_age = time.monotonic() - self.last_plan_wall
         if self.last_plan and plan_age <= float(self.get_parameter("plan_heading_max_age_s").value):
@@ -366,9 +386,9 @@ class MazeFallbackGoal(Node):
                 return math.atan2(dy, dx), "last_plan_tail"
 
         window = float(self.get_parameter("motion_heading_window_s").value)
-        if len(self.odom_history) >= 2:
-            latest = self.odom_history[-1]
-            for sample in reversed(self.odom_history):
+        if len(self.pose_history) >= 2:
+            latest = self.pose_history[-1]
+            for sample in reversed(self.pose_history):
                 if latest[0] - sample[0] >= window:
                     break
             dx, dy = latest[1] - sample[1], latest[2] - sample[2]
@@ -376,40 +396,6 @@ class MazeFallbackGoal(Node):
                 return math.atan2(dy, dx), "recent_motion"
 
         return None, None
-
-    def _maze_goal_reached(self):
-        current = self._current_xy()
-        return (
-            current is not None
-            and self.maze_goal is not None
-            and math.hypot(current[0] - self.maze_goal[0], current[1] - self.maze_goal[1])
-            <= float(self.get_parameter("maze_goal_reached_m").value)
-        )
-
-    def _load_maze_goal(self):
-        try:
-            config = load_config(str(self.get_parameter("config_path").value))
-            corridor_width = float(self.get_parameter("corridor_width_m").value)
-            config["maze"]["cell_size_m"] = corridor_width
-            config["maze"]["cell_width_m"] = corridor_width
-            config["maze"]["cell_length_m"] = corridor_width
-            maze = generate_maze_from_config(config, int(self.get_parameter("seed").value))
-            plan = plan_oracle_path(maze, simplify=False, planner="heading_astar", turn_penalty_cost=2.0)
-            start_world = cell_to_world_xy(maze, maze.spec.start_cell)
-            goal_world = cell_to_world_xy(maze, maze.spec.goal_cell)
-            yaw = float(config.get("nav2_navigation", {}).get("initial_spawn_yaw_rad", 0.0))
-            self.maze_path = [self._world_to_start_relative(point[:2], start_world, yaw) for point in plan.waypoints]
-            return self._world_to_start_relative(goal_world, start_world, yaw)
-        except PlanningError as exc:
-            self.get_logger().warning(f"Could not compute maze path fallback: {exc}")
-        except Exception as exc:
-            self.get_logger().warning(f"Could not compute maze goal fallback: {exc}")
-        self.maze_path = []
-        return None
-
-    def _world_to_start_relative(self, point, start_world, yaw):
-        dx, dy = point[0] - start_world[0], point[1] - start_world[1]
-        return math.cos(yaw) * dx + math.sin(yaw) * dy, -math.sin(yaw) * dx + math.cos(yaw) * dy
 
     def _map_value(self, x, y):
         info = self.map.info
@@ -480,18 +466,18 @@ class MazeFallbackGoal(Node):
         return None
 
     def _current_xy(self):
-        if self.odom is None:
+        if self.map_pose is None:
             return None
-        p = self.odom.pose.pose.position
+        p = self.map_pose.pose.pose.position
         return float(p.x), float(p.y)
 
-    def _odom(self, msg):
-        self.odom = msg
+    def _slam_pose(self, msg):
+        self.map_pose = msg
         p = msg.pose.pose.position
         now = time.monotonic()
-        self.odom_history.append((now, float(p.x), float(p.y)))
+        self.pose_history.append((now, float(p.x), float(p.y)))
         cutoff = now - max(8.0, float(self.get_parameter("motion_heading_window_s").value) + 1.0)
-        self.odom_history = [sample for sample in self.odom_history if sample[0] >= cutoff]
+        self.pose_history = [sample for sample in self.pose_history if sample[0] >= cutoff]
 
     def _plan(self, msg):
         if self.last_explore_status not in ACTIVE_EXPLORE_STATUSES:
@@ -502,18 +488,22 @@ class MazeFallbackGoal(Node):
             self.last_plan_wall = time.monotonic()
 
     def _current_yaw(self):
-        if self.odom is None:
+        if self.map_pose is None:
             return None
-        q = self.odom.pose.pose.orientation
+        q = self.map_pose.pose.pose.orientation
         return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
-    def _pose(self, x, y):
+    def _pose(self, x, y, yaw=None):
         pose = PoseStamped()
         pose.header.frame_id = "map"
         pose.header.stamp = self.get_clock().now().to_msg()
         pose.pose.position.x = float(x)
         pose.pose.position.y = float(y)
-        pose.pose.orientation.w = 1.0
+        if yaw is None:
+            pose.pose.orientation.w = 1.0
+        else:
+            pose.pose.orientation.z = math.sin(float(yaw) / 2.0)
+            pose.pose.orientation.w = math.cos(float(yaw) / 2.0)
         return pose
 
     def _publish_status(self, status):
@@ -526,9 +516,11 @@ class MazeFallbackGoal(Node):
             "current_goal_kind": self.current_goal_kind,
             "current_heading_source": self.current_heading_source,
             "current_goal_clearance_m": self.current_goal_clearance,
-            "maze_goal": self.maze_goal,
-            "maze_path_points": len(self.maze_path),
-            "maze_goal_reached": self.goal_reached,
+            "current_pose_source": "slam_toolbox_pose" if self.map_pose is not None else None,
+            "oracle_runtime_dependency": False,
+            "m_explore_recovery_pending": self.recovery_pending,
+            "m_explore_recovery_attempts": self.recovery_attempts,
+            "m_explore_recovery_note": self.recovery_note,
             "events": self.events[-20:],
         }, sort_keys=True)))
 

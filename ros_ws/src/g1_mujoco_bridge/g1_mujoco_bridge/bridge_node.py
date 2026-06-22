@@ -131,6 +131,8 @@ class G1MujocoBridge(Node):
         self.held_qpos = self.data.qpos.copy()
         self.state_lock = threading.RLock()
         self.motion_session = None
+        if self.motion_mode == "nav2_navigation" and bool(self.get_parameter("ground_truth_navigation_odom").value):
+            raise RuntimeError("MuJoCo ground truth odometry is forbidden for Nav2 navigation; use sensor/SLAM odometry only.")
         if self.motion_mode == "oracle_mapping":
             self.motion_session = OracleMotionSession(
                 self.mujoco, self.model, self.data, self.config, self.seed,
@@ -220,7 +222,10 @@ class G1MujocoBridge(Node):
         self.odom_pub = self.create_publisher(Odometry, "/odom", 20)
         self.command_odom_pub = self.create_publisher(Odometry, "/debug/command_odom", 20)
         self.ground_truth_odom_pub = self.create_publisher(Odometry, "/ground_truth/odom", 20)
-        self.oracle_cmd_pub = self.create_publisher(TwistStamped, "/oracle_cmd_vel", 20)
+        self.oracle_cmd_pub = (
+            self.create_publisher(TwistStamped, "/oracle_cmd_vel", 20)
+            if self.motion_mode == "oracle_mapping" else None
+        )
         self.applied_cmd_pub = self.create_publisher(TwistStamped, "/applied_cmd_vel", 20)
         self.achieved_velocity_pub = self.create_publisher(TwistStamped, "/ground_truth/achieved_velocity", 20)
         if self.motion_mode == "nav2_navigation":
@@ -344,7 +349,8 @@ class G1MujocoBridge(Node):
             command.twist.linear.x = float(self.motion_session.last_command.vx)
             command.twist.angular.z = float(self.motion_session.last_command.yaw_rate)
             if self.motion_mode == "oracle_mapping":
-                self.oracle_cmd_pub.publish(command)
+                if self.oracle_cmd_pub is not None:
+                    self.oracle_cmd_pub.publish(command)
             else:
                 self.applied_cmd_pub.publish(command)
                 achieved = TwistStamped()

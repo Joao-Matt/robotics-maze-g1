@@ -1,0 +1,9 @@
+gymnasium>=0.29,<1.1
+stable-baselines3>=2.4,<3
+tensorboard>=2.14
+typing_extensions>=4.8
+filelock>=3.0
+fsspec>=2023.1
+jinja2>=3.0
+networkx>=2.8
+mpmath>=1.1,<1.4

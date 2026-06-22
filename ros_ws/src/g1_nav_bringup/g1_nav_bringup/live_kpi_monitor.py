@@ -17,6 +17,7 @@ from pathlib import Path
 import threading
 import time
 from urllib.parse import urlparse
+import webbrowser
 
 import numpy as np
 import rclpy
@@ -40,6 +41,7 @@ from g1_nav_bringup.live_kpi_metrics import (
     scan_clearance,
 )
 from maze.generator import generate_maze_from_config
+from nav.path_progress import path_progress_metrics
 from nav.planner import PlanningError, plan_oracle_path
 from sim.config import load_config
 from sim.mujoco_runner import _write_png
@@ -168,6 +170,8 @@ class LiveKpiMonitor(Node):
             ("config_path", "/workspace/configs/default.yaml"),
             ("corridor_width_m", 2.0),
             ("dashboard_port", 8765),
+            ("dashboard_port_search_limit", 20),
+            ("dashboard_auto_open", True),
             ("dashboard_bind_address", "127.0.0.1"),
             ("dashboard_rate_hz", 2.0),
             ("dashboard_visual_rate_hz", 1.0),
@@ -183,7 +187,7 @@ class LiveKpiMonitor(Node):
         self.seed = int(self.get_parameter("seed").value)
         self.duration_s = float(self.get_parameter("duration_s").value)
         self.config = self._load_config()
-        self.maze, self.goal_xy, self.optimal_path_m = self._maze_reference()
+        self.maze, self.goal_xy, self.optimal_path_m, self.oracle_path_xy = self._maze_reference()
         self.expected_rates = self._expected_rates()
 
         self.topic_times: defaultdict[str, deque[float]] = defaultdict(_rate_window)
@@ -198,6 +202,7 @@ class LiveKpiMonitor(Node):
         self.latest_map_stats: dict[str, object] = {}
         self.first_map_wall: float | None = None
         self.latest_scan: dict[str, object] = {}
+        self.run_min_scan_clearance_m: float | None = None
         self.motion: dict[str, object] = {}
         self.exploration: dict[str, object] = {}
         self.odom_quality: dict[str, object] = {}
@@ -214,6 +219,9 @@ class LiveKpiMonitor(Node):
         self._cpu_previous: tuple[float, int, int, int] | None = None
         self._http_server: ReusableThreadingHTTPServer | None = None
         self._http_thread: threading.Thread | None = None
+        self.dashboard_port: int | None = None
+        self.dashboard_url: str | None = None
+        self._browser_opened = False
 
         self.kpi_pub = self.create_publisher(String, "/dashboard/kpis", 10)
         self._write_index()
@@ -240,6 +248,7 @@ class LiveKpiMonitor(Node):
     def _maze_reference(self):
         maze = generate_maze_from_config(self.config, self.seed)
         goal = cell_to_world_xy(maze, maze.spec.goal_cell)
+        points: list[tuple[float, float]] = []
         try:
             plan = plan_oracle_path(maze, simplify=False)
             points = [(x, y) for x, y, _ in plan.waypoints]
@@ -247,7 +256,7 @@ class LiveKpiMonitor(Node):
         except (PlanningError, ValueError, KeyError) as exc:
             self.get_logger().warning(f"Could not compute oracle path length for live dashboard: {exc}")
             optimal = None
-        return maze, goal, optimal
+        return maze, goal, optimal, points
 
     def _expected_rates(self) -> dict[str, float | None]:
         scan_rate = float(self.config.get("livox_mid360", {}).get("scan_rate_hz", 10.0))
@@ -303,6 +312,11 @@ class LiveKpiMonitor(Node):
     def _scan(self, msg: LaserScan) -> None:
         values = scan_clearance(msg.ranges, msg.range_min, msg.range_max)
         self.latest_scan = values
+        current_min = values.get("min_clearance_m")
+        if isinstance(current_min, (int, float)) and math.isfinite(float(current_min)):
+            current_min = float(current_min)
+            if self.run_min_scan_clearance_m is None or current_min < self.run_min_scan_clearance_m:
+                self.run_min_scan_clearance_m = current_min
         self._seen("scan", _stamp(msg.header.stamp), int(values.get("invalid_ranges") or 0))
 
     def _imu(self, msg: Imu) -> None:
@@ -412,7 +426,16 @@ class LiveKpiMonitor(Node):
         wall_elapsed = now_wall - self.started_wall
         distance = self._distance_traveled()
         goal_error = self._goal_error()
-        path_efficiency = distance / self.optimal_path_m if distance is not None and self.optimal_path_m and self.optimal_path_m > 1e-6 else None
+        progress = path_progress_metrics(
+            path_points=self.oracle_path_xy,
+            trajectory_points=list(self.actual_xy),
+            distance_traveled_m=distance,
+        )
+        distance_over_optimal = (
+            distance / self.optimal_path_m
+            if distance is not None and self.optimal_path_m and self.optimal_path_m > 1e-6
+            else None
+        )
         localization = localization_metrics(list(self.odom_eval), list(self.truth_eval))
         smoothness = command_smoothness(list(self.applied_cmds))
         topic_health = self._topic_health(now_wall)
@@ -461,14 +484,23 @@ class LiveKpiMonitor(Node):
                 "time_remaining_s": max(0.0, self.duration_s - sim_elapsed) if self.duration_s > 0 else None,
                 "distance_traveled_m": distance,
                 "optimal_path_m": self.optimal_path_m,
-                "path_efficiency": path_efficiency,
+                "path_efficiency": progress.get("path_efficiency"),
+                "distance_over_optimal_fraction": distance_over_optimal,
+                "ground_truth_path_length_m": progress.get("ground_truth_path_length_m"),
+                "best_progress_along_path_m": progress.get("best_progress_along_path_m"),
+                "final_progress_along_path_m": progress.get("final_progress_along_path_m"),
+                "best_path_completion_fraction": progress.get("best_path_completion_fraction"),
+                "final_path_completion_fraction": progress.get("final_path_completion_fraction"),
+                "remaining_path_distance_m": progress.get("remaining_path_distance_m"),
+                "path_progress_warning": progress.get("path_progress_warning"),
                 "final_goal_error_m": goal_error,
                 "latest_plan_length_m": path_length(self.latest_plan),
                 "current_goals": self.current_goals,
             },
             "safety_motion": {
                 "wall_collisions": wall_contacts,
-                "min_wall_clearance_m": self.latest_scan.get("min_clearance_m"),
+                "min_wall_clearance_m": self.run_min_scan_clearance_m,
+                "latest_scan_clearance_m": self.latest_scan.get("min_clearance_m"),
                 "median_scan_clearance_m": self.latest_scan.get("median_clearance_m"),
                 "stuck_events_and_recoveries": stuck_events,
                 "smoothness": smoothness,
@@ -498,6 +530,8 @@ class LiveKpiMonitor(Node):
             },
             "artifacts": {
                 "live_dashboard": str(self.live_dir),
+                "dashboard_url": self.dashboard_url,
+                "dashboard_port": self.dashboard_port,
                 "kpis_latest": str(self.live_dir / "kpis.latest.json"),
                 "map_thumbnail": str(self.live_dir / "map_thumb.png"),
             },
@@ -562,8 +596,6 @@ class LiveKpiMonitor(Node):
         if not has_run_data:
             return "waiting"
         terminal_without_goal = {
-            "EXPLORATION_COMPLETE",
-            "RETURNED_TO_ORIGIN",
             "TIME_LIMIT_REACHED",
             "TIMEOUT",
             "FAILED",
@@ -696,8 +728,10 @@ class LiveKpiMonitor(Node):
 
     @staticmethod
     def _failure_taxonomy(status: str) -> str:
-        if status in {"GOAL_REACHED", "EXPLORATION_COMPLETE", "RETURNED_TO_ORIGIN"}:
+        if status == "GOAL_REACHED":
             return "none"
+        if status in {"EXPLORATION_COMPLETE", "RETURNED_TO_ORIGIN"}:
+            return "running"
         if "STUCK" in status:
             return "stuck"
         if "COLLISION" in status:
@@ -794,15 +828,48 @@ class LiveKpiMonitor(Node):
 
     def _start_http_server(self) -> None:
         bind = str(self.get_parameter("dashboard_bind_address").value)
-        port = int(self.get_parameter("dashboard_port").value)
-        try:
-            self._http_server = ReusableThreadingHTTPServer((bind, port), make_handler(self.state, self.live_dir))
-        except OSError as exc:
-            self.get_logger().error(f"Live KPI dashboard HTTP server could not bind {bind}:{port}: {exc}")
+        requested_port = int(self.get_parameter("dashboard_port").value)
+        search_limit = max(0, int(self.get_parameter("dashboard_port_search_limit").value))
+        last_error: OSError | None = None
+        for offset in range(search_limit + 1):
+            port = requested_port + offset
+            try:
+                self._http_server = ReusableThreadingHTTPServer((bind, port), make_handler(self.state, self.live_dir))
+                self.dashboard_port = port
+                break
+            except OSError as exc:
+                last_error = exc
+                if offset == 0:
+                    self.get_logger().warning(f"Live KPI dashboard port {requested_port} is busy: {exc}")
+        if self._http_server is None or self.dashboard_port is None:
+            self.get_logger().error(
+                f"Live KPI dashboard HTTP server could not bind {bind}:{requested_port}"
+                f"..{requested_port + search_limit}: {last_error}"
+            )
             return
         self._http_thread = threading.Thread(target=self._http_server.serve_forever, name="live-kpi-http", daemon=True)
         self._http_thread.start()
-        self.get_logger().info(f"Live KPI dashboard: http://127.0.0.1:{port}/index.html")
+        host = "127.0.0.1" if bind in {"", "0.0.0.0", "::"} else bind
+        self.dashboard_url = f"http://{host}:{self.dashboard_port}/index.html"
+        (self.live_dir / "dashboard_url.txt").write_text(self.dashboard_url + "\n", encoding="utf-8")
+        self.get_logger().info(f"Live KPI dashboard: {self.dashboard_url}")
+        if bool(self.get_parameter("dashboard_auto_open").value):
+            threading.Thread(target=self._open_dashboard_browser, name="live-kpi-browser", daemon=True).start()
+
+    def _open_dashboard_browser(self) -> None:
+        if self.dashboard_url is None or self._browser_opened:
+            return
+        self._browser_opened = True
+        time.sleep(0.25)
+        try:
+            opened = webbrowser.open_new_tab(self.dashboard_url)
+        except Exception as exc:
+            self.get_logger().warning(f"Could not open KPI dashboard in browser: {exc}")
+            return
+        if opened:
+            self.get_logger().info("KPI dashboard opened in browser; close the browser tab/window manually when done.")
+        else:
+            self.get_logger().warning(f"No browser opener accepted KPI dashboard URL: {self.dashboard_url}")
 
     def _write_index(self) -> None:
         (self.live_dir / "index.html").write_text(INDEX_HTML, encoding="utf-8")
@@ -865,8 +932,8 @@ section{min-width:0}.demo-panel{margin:0 0 20px;padding-bottom:18px;border-botto
 <script>
 const groups=[
  {key:"success",eyebrow:"Success",title:"Held-out solve rate",rows:[["Single-run result","success.single_run_terminal_status"],["Reached generated goal","success.single_run_goal_reached"],["Held-out solve rate","success.held_out_solve_rate_note"]]},
- {key:"mission",eyebrow:"Mission",title:"Efficiency and speed",rows:[["Path efficiency","mission.path_efficiency","ratio"],["Time elapsed","mission.sim_elapsed_s","s"],["Distance traveled","mission.distance_traveled_m","m"],["Final goal error","mission.final_goal_error_m","m"]]},
- {key:"safety_motion",eyebrow:"Safety and motion",title:"Did it move cleanly?",rows:[["Wall collisions","safety_motion.wall_collisions"],["Min wall clearance","safety_motion.min_wall_clearance_m","m"],["Stuck events and recoveries","safety_motion.stuck_events_and_recoveries"],["Yaw accel RMS","safety_motion.smoothness.yaw_accel_rms_radps2","rad/s2"]]},
+ {key:"mission",eyebrow:"Mission",title:"Efficiency and speed",rows:[["Path efficiency","mission.path_efficiency","ratio"],["Path completion","mission.final_path_completion_fraction","pct"],["Time elapsed","mission.sim_elapsed_s","s"],["Final goal error","mission.final_goal_error_m","m"]]},
+ {key:"safety_motion",eyebrow:"Safety and motion",title:"Did it move cleanly?",rows:[["Wall collisions","safety_motion.wall_collisions"],["Run-min clearance","safety_motion.min_wall_clearance_m","m"],["Latest clearance","safety_motion.latest_scan_clearance_m","m"],["Stuck events and recoveries","safety_motion.stuck_events_and_recoveries"],["Yaw accel RMS","safety_motion.smoothness.yaw_accel_rms_radps2","rad/s2"]]},
  {key:"localization",eyebrow:"Localization",title:"Did it know where it was?",rows:[["ATE vs ground truth","localization.position_rmse_m","m"],["Final odom error","localization.final_position_error_m","m"],["Drift scale","localization.distance_scale","ratio"],["Aligned samples","localization.aligned_samples"]]},
  {key:"mapping",eyebrow:"Mapping",title:"Did it map the maze?",rows:[["Map coverage","mapping.coverage_fraction","pct"],["Known cells","mapping.known_cells"],["Free cells","mapping.free_cells"],["Plan updates","mapping.nav2_plan_updates"]]},
  {key:"reliability",eyebrow:"Reliability",title:"Would it run unsupervised?",rows:[["MTBF","reliability.mtbf_m_per_failure","m"],["Failure taxonomy","reliability.failure_taxonomy"],["Realtime factor","reliability.realtime_factor","ratio"],["Solve vs complexity","reliability.solve_rate_vs_complexity"]]}

@@ -15,6 +15,9 @@ explore_node:
     # Prefer the reachable frontier requiring the smallest absolute change
     # from the robot's current heading. Distance/gain breaks exact ties only.
     prefer_minimum_turn: true
+    # The fallback node sends /explore/resume after m-explore reports complete.
+    # Clearing the blacklist makes that resume act like an in-process reset.
+    clear_blacklist_on_resume: true
     # Send Nav2 a rolling local lookahead toward the selected frontier instead
     # of the frontier centroid far inside unknown space.
     max_frontier_goal_distance: 3.8

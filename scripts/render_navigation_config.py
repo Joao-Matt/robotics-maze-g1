@@ -4,9 +4,14 @@ import argparse,json
 from pathlib import Path
 import yaml
 
-p=argparse.ArgumentParser(); p.add_argument("--config",type=Path,required=True); p.add_argument("--nav2-template",type=Path,required=True); p.add_argument("--calibration",type=Path,required=True); p.add_argument("--output-dir",type=Path,required=True); a=p.parse_args()
+p=argparse.ArgumentParser(); p.add_argument("--config",type=Path,required=True); p.add_argument("--nav2-template",type=Path,required=True); p.add_argument("--calibration",type=Path,required=True); p.add_argument("--output-dir",type=Path,required=True); p.add_argument("--cell-size-m",type=float); a=p.parse_args()
 cal=json.loads(a.calibration.read_text()); calibrated_speed=float(cal["selected_max_forward_mps"])
-config=yaml.safe_load(a.config.read_text()); limits=config.setdefault("nav2_navigation",{})
+config=yaml.safe_load(a.config.read_text()); maze=config.setdefault("maze",{})
+if a.cell_size_m is not None:
+    if a.cell_size_m <= 0.0:
+        raise ValueError("--cell-size-m must be positive")
+    maze["cell_size_m"]=float(a.cell_size_m); maze["cell_width_m"]=float(a.cell_size_m); maze["cell_length_m"]=float(a.cell_size_m)
+limits=config.setdefault("nav2_navigation",{})
 # Calibration establishes what the policy can do; the configured exploration
 # limit establishes what it is allowed to do near walls.
 speed=min(calibrated_speed,float(limits.get("max_forward_mps",.60)))
@@ -33,7 +38,10 @@ follow["PathDist.scale"]=float(limits.get("path_dist_scale",follow.get("PathDist
 follow["GoalDist.scale"]=float(limits.get("goal_dist_scale",follow.get("GoalDist.scale",10.0)))
 costmap_resolution=float(limits.get("costmap_resolution_m",0.05))
 robot_radius=float(limits.get("costmap_robot_radius_m",0.60))
-inflation_radius=float(limits.get("inflation_radius_m",1.20))
+cell_width=float(maze.get("cell_width_m",maze.get("cell_size_m",1.0)))
+inflation_fraction=limits.get("inflation_radius_cell_width_fraction")
+inflation_radius=float(limits.get("inflation_radius_m",1.20)) if inflation_fraction is None else cell_width*float(inflation_fraction)
+limits["inflation_radius_m"]=inflation_radius
 inflation_scale=float(limits.get("inflation_cost_scaling",1.25))
 for section in ("global_costmap","local_costmap"):
     params=nav[section][section]["ros__parameters"]
