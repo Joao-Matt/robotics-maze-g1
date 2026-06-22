@@ -6,6 +6,7 @@ successive D435i depth scans and never reads MuJoCo ground truth.
 
 from __future__ import annotations
 
+from collections import deque
 import math
 import time
 import json
@@ -60,6 +61,23 @@ def scan_match(previous: np.ndarray, current: np.ndarray, dx: float, dy: float, 
     return float(translation[0]),float(translation[1]),yaw,float(np.sqrt(np.mean(errors**2))),float(inliers.mean())
 
 
+def sensor_delta_from_base(dx: float, dy: float, dyaw: float, offset_x: float, offset_y: float) -> tuple[float, float]:
+    c,s=math.cos(dyaw),math.sin(dyaw)
+    return dx+(c-1.0)*offset_x-s*offset_y,dy+s*offset_x+(c-1.0)*offset_y
+
+
+def base_delta_from_sensor(dx: float, dy: float, dyaw: float, offset_x: float, offset_y: float) -> tuple[float, float]:
+    c,s=math.cos(dyaw),math.sin(dyaw)
+    return dx+(1.0-c)*offset_x+s*offset_y,dy-s*offset_x+(1.0-c)*offset_y
+
+
+def quaternion_yaw(x: float, y: float, z: float, w: float) -> float | None:
+    norm=math.sqrt(x*x+y*y+z*z+w*w)
+    if not math.isfinite(norm) or norm<1e-9:return None
+    x,y,z,w=x/norm,y/norm,z/norm,w/norm
+    return math.atan2(2.0*(w*z+x*y),1.0-2.0*(y*y+z*z))
+
+
 class D435iScanOdometry(Node):
     def __init__(self):
         super().__init__("d435i_scan_odometry")
@@ -68,12 +86,29 @@ class D435iScanOdometry(Node):
             ("publish_tf", True),
             ("odom_frame_id", "odom"),
             ("base_frame_id", "base_link"),
+            ("sensor_offset_x_m", 0.0),
+            ("sensor_offset_y_m", 0.0),
+            ("linear_prediction_scale", 1.0),
+            ("angular_prediction_scale", 1.0),
+            ("imu_yaw_rate_scale", 1.0),
+            ("use_imu_orientation_yaw", True),
+            ("imu_orientation_yaw_scale", 1.0),
+            ("odometry_translation_scale", 1.0),
+            ("odometry_yaw_scale", 1.0),
+            ("scan_translation_correction_weight", 1.0),
+            ("scan_yaw_correction_weight", 1.0),
+            ("command_latency_s", 0.0),
+            ("imu_latency_s", 0.0),
+            ("command_timeout_s", 0.35),
+            ("imu_timeout_s", 0.35),
             ("scan_maximum_points", 180),
             ("icp_maximum_correspondence_m", 0.35),
             ("icp_iterations", 8),
             ("icp_min_inlier_ratio", 0.12),
             ("icp_max_prediction_translation_error_m", 0.22),
             ("icp_max_prediction_yaw_error_rad", 0.25),
+            ("max_step_translation_m", 0.35),
+            ("max_step_yaw_rad", 0.5),
             ("odom_dt_max_s", 2.0),
             ("odom_covariance_min", 0.0025),
             ("odom_covariance_max", 0.25),
@@ -84,7 +119,8 @@ class D435iScanOdometry(Node):
         self.odom_frame_id=str(self.get_parameter("odom_frame_id").value).strip() or "odom"
         self.base_frame_id=str(self.get_parameter("base_frame_id").value).strip() or "base_link"
         self.previous=None; self.previous_stamp=None; self.x=self.y=self.yaw=0.0
-        self.command=(0.0,0.0); self.imu_yaw_rate=None; self.last_scan_wall=time.monotonic(); self.sequence=0
+        self.command_history=deque(maxlen=200); self.imu_history=deque(maxlen=400)
+        self.last_scan_wall=time.monotonic(); self.sequence=0; self.accepted_count=0; self.rejected_count=0; self.step_limited_count=0
         self.publisher=self.create_publisher(Odometry,self.output_odom_topic,50)
         self.status=self.create_publisher(String,"/odometry/d435i_status",10)
         self.broadcaster=TransformBroadcaster(self) if self.publish_tf else None
@@ -92,10 +128,29 @@ class D435iScanOdometry(Node):
         self.create_subscription(TwistStamped,"/applied_cmd_vel",self._command,20)
         self.create_subscription(Imu,"/imu/data",self._imu,qos_profile_sensor_data)
 
-    def _command(self,message):self.command=(float(message.twist.linear.x),float(message.twist.angular.z))
+    def _stamp_ns(self,message):
+        return rclpy.time.Time.from_msg(message.header.stamp).nanoseconds
+
+    def _command(self,message):
+        self.command_history.append((self._stamp_ns(message),float(message.twist.linear.x),float(message.twist.angular.z)))
+
     def _imu(self,message):
         value=float(message.angular_velocity.z)
-        if math.isfinite(value):self.imu_yaw_rate=value
+        yaw=quaternion_yaw(float(message.orientation.x),float(message.orientation.y),float(message.orientation.z),float(message.orientation.w))
+        if math.isfinite(value) or yaw is not None:self.imu_history.append((self._stamp_ns(message),value if math.isfinite(value) else None,yaw))
+
+    @staticmethod
+    def _latest_at(history,target_ns,timeout_s):
+        if not history:return None,None
+        timeout_ns=max(0.0,float(timeout_s))*1e9
+        chosen=None
+        for item in reversed(history):
+            if item[0]<=target_ns:
+                chosen=item;break
+        if chosen is None:chosen=history[0]
+        age_ns=abs(target_ns-chosen[0])
+        if age_ns>timeout_ns:return None,age_ns*1e-9
+        return chosen,age_ns*1e-9
 
     def _scan(self,message):
         maximum_points=max(8,int(self.get_parameter("scan_maximum_points").value))
@@ -103,14 +158,32 @@ class D435iScanOdometry(Node):
         if points.shape[0]<8:return
         dt_limit=max(0.0,float(self.get_parameter("odom_dt_max_s").value))
         dt=0.0 if self.previous_stamp is None else max(0.0,min(dt_limit,(now_ns-self.previous_stamp)*1e-9))
-        predicted_dx=self.command[0]*dt; predicted_yaw=(self.imu_yaw_rate if self.imu_yaw_rate is not None else self.command[1])*dt
-        rmse,ratio=0.0,1.0
+        command_target=now_ns-int(float(self.get_parameter("command_latency_s").value)*1e9)
+        imu_target=now_ns-int(float(self.get_parameter("imu_latency_s").value)*1e9)
+        command,command_age=self._latest_at(self.command_history,command_target,float(self.get_parameter("command_timeout_s").value))
+        imu_timeout=float(self.get_parameter("imu_timeout_s").value)
+        imu,imu_age=self._latest_at(self.imu_history,imu_target,imu_timeout)
+        previous_imu,_=self._latest_at(self.imu_history,self.previous_stamp-int(float(self.get_parameter("imu_latency_s").value)*1e9),imu_timeout) if self.previous_stamp is not None else (None,None)
+        command_vx=0.0 if command is None else float(command[1])
+        command_wz=0.0 if command is None else float(command[2])
+        predicted_base_dx=command_vx*float(self.get_parameter("linear_prediction_scale").value)*dt
+        yaw_source="command"
+        yaw_rate=(float(imu[1])*float(self.get_parameter("imu_yaw_rate_scale").value)) if imu is not None and imu[1] is not None else command_wz*float(self.get_parameter("angular_prediction_scale").value)
+        predicted_yaw=yaw_rate*dt
+        if bool(self.get_parameter("use_imu_orientation_yaw").value) and imu is not None and previous_imu is not None and imu[2] is not None and previous_imu[2] is not None:
+            predicted_yaw=math.atan2(math.sin(float(imu[2])-float(previous_imu[2])),math.cos(float(imu[2])-float(previous_imu[2])))*float(self.get_parameter("imu_orientation_yaw_scale").value)
+            yaw_source="imu_orientation"
+        elif imu is not None and imu[1] is not None:
+            yaw_source="imu_rate"
+        offset_x=float(self.get_parameter("sensor_offset_x_m").value); offset_y=float(self.get_parameter("sensor_offset_y_m").value)
+        predicted_sensor_dx,predicted_sensor_dy=sensor_delta_from_base(predicted_base_dx,0.0,predicted_yaw,offset_x,offset_y)
+        rmse,ratio=0.0,1.0; accepted=False; step_limited=False
         if self.previous is not None and dt>0:
-            dx,dy,dyaw,rmse,ratio=scan_match(
+            sensor_dx,sensor_dy,dyaw,rmse,ratio=scan_match(
                 self.previous,
                 points,
-                predicted_dx,
-                0.0,
+                predicted_sensor_dx,
+                predicted_sensor_dy,
                 predicted_yaw,
                 maximum_correspondence=float(self.get_parameter("icp_maximum_correspondence_m").value),
                 iterations=max(1,int(self.get_parameter("icp_iterations").value)),
@@ -120,16 +193,38 @@ class D435iScanOdometry(Node):
             min_ratio=float(self.get_parameter("icp_min_inlier_ratio").value)
             max_translation_error=float(self.get_parameter("icp_max_prediction_translation_error_m").value)
             max_yaw_error=float(self.get_parameter("icp_max_prediction_yaw_error_rad").value)
-            if not math.isfinite(rmse) or ratio<min_ratio or math.hypot(dx-predicted_dx,dy)>max_translation_error or abs(dyaw-predicted_yaw)>max_yaw_error:
-                dx,dy,dyaw=predicted_dx,0.0,predicted_yaw
+            accepted=math.isfinite(rmse) and ratio>=min_ratio and math.hypot(sensor_dx-predicted_sensor_dx,sensor_dy-predicted_sensor_dy)<=max_translation_error and abs(dyaw-predicted_yaw)<=max_yaw_error
+            if not accepted:
+                self.rejected_count+=1; sensor_dx,sensor_dy,dyaw=predicted_sensor_dx,predicted_sensor_dy,predicted_yaw
+            else:
+                self.accepted_count+=1
+                translation_weight=max(0.0,min(1.0,float(self.get_parameter("scan_translation_correction_weight").value)))
+                yaw_weight=max(0.0,min(1.0,float(self.get_parameter("scan_yaw_correction_weight").value)))
+                sensor_dx=predicted_sensor_dx+translation_weight*(sensor_dx-predicted_sensor_dx)
+                sensor_dy=predicted_sensor_dy+translation_weight*(sensor_dy-predicted_sensor_dy)
+                yaw_correction=math.atan2(math.sin(dyaw-predicted_yaw),math.cos(dyaw-predicted_yaw))
+                dyaw=predicted_yaw+yaw_weight*yaw_correction
+            dx,dy=base_delta_from_sensor(sensor_dx,sensor_dy,dyaw,offset_x,offset_y)
+            motion_scale=max(0.0,float(self.get_parameter("odometry_translation_scale").value))
+            yaw_scale=max(0.0,float(self.get_parameter("odometry_yaw_scale").value))
+            dx*=motion_scale; dy*=motion_scale; dyaw*=yaw_scale
+            max_step_translation=float(self.get_parameter("max_step_translation_m").value)
+            max_step_yaw=float(self.get_parameter("max_step_yaw_rad").value)
+            step_translation=math.hypot(dx,dy)
+            if (max_step_translation>0.0 and step_translation>max_step_translation) or (max_step_yaw>0.0 and abs(dyaw)>max_step_yaw):
+                self.step_limited_count+=1; step_limited=True
+                if max_step_translation>0.0 and step_translation>max_step_translation:
+                    scale=max_step_translation/max(1e-9,step_translation); dx*=scale; dy*=scale
+                if max_step_yaw>0.0 and abs(dyaw)>max_step_yaw:
+                    dyaw=math.copysign(max_step_yaw,dyaw)
             c,s=math.cos(self.yaw),math.sin(self.yaw)
             self.x+=c*dx-s*dy; self.y+=s*dx+c*dy; self.yaw=math.atan2(math.sin(self.yaw+dyaw),math.cos(self.yaw+dyaw))
             vx=dx/dt; vy=dy/dt; wz=dyaw/dt
         else:vx=vy=wz=0.0
         self.previous,self.previous_stamp=points,now_ns; self.sequence+=1
-        self._publish(message.header.stamp,vx,vy,wz,rmse,ratio)
+        self._publish(message.header.stamp,vx,vy,wz,rmse,ratio,accepted,step_limited,command_age,imu_age,predicted_base_dx,predicted_yaw,yaw_source)
 
-    def _publish(self,stamp,vx,vy,wz,rmse,ratio):
+    def _publish(self,stamp,vx,vy,wz,rmse,ratio,accepted,step_limited,command_age,imu_age,predicted_dx,predicted_yaw,yaw_source):
         qz,qw=math.sin(self.yaw/2),math.cos(self.yaw/2)
         odom=Odometry(); odom.header.stamp=stamp; odom.header.frame_id=self.odom_frame_id; odom.child_frame_id=self.base_frame_id
         odom.pose.pose.position.x=self.x; odom.pose.pose.position.y=self.y; odom.pose.pose.orientation.z=qz; odom.pose.pose.orientation.w=qw
@@ -150,10 +245,37 @@ class D435iScanOdometry(Node):
             "base_frame_id": self.base_frame_id,
             "linear_command_prediction": True,
             "imu_yaw_prediction": True,
+            "predicted_yaw_source": yaw_source,
             "ground_truth": False,
             "sequence": self.sequence,
+            "icp_accepted": accepted,
+            "accepted_count": self.accepted_count,
+            "rejected_count": self.rejected_count,
+            "step_limited": step_limited,
+            "step_limited_count": self.step_limited_count,
+            "command_age_s": command_age,
+            "imu_age_s": imu_age,
+            "predicted_dx_m": predicted_dx,
+            "predicted_yaw_rad": predicted_yaw,
             "rmse_m": rmse if math.isfinite(rmse) else 999.0,
             "inlier_ratio": ratio,
+            "sensor_offset_x_m": float(self.get_parameter("sensor_offset_x_m").value),
+            "sensor_offset_y_m": float(self.get_parameter("sensor_offset_y_m").value),
+            "linear_prediction_scale": float(self.get_parameter("linear_prediction_scale").value),
+            "angular_prediction_scale": float(self.get_parameter("angular_prediction_scale").value),
+            "imu_yaw_rate_scale": float(self.get_parameter("imu_yaw_rate_scale").value),
+            "use_imu_orientation_yaw": bool(self.get_parameter("use_imu_orientation_yaw").value),
+            "imu_orientation_yaw_scale": float(self.get_parameter("imu_orientation_yaw_scale").value),
+            "odometry_translation_scale": float(self.get_parameter("odometry_translation_scale").value),
+            "odometry_yaw_scale": float(self.get_parameter("odometry_yaw_scale").value),
+            "scan_translation_correction_weight": float(self.get_parameter("scan_translation_correction_weight").value),
+            "scan_yaw_correction_weight": float(self.get_parameter("scan_yaw_correction_weight").value),
+            "command_latency_s": float(self.get_parameter("command_latency_s").value),
+            "imu_latency_s": float(self.get_parameter("imu_latency_s").value),
+            "command_timeout_s": float(self.get_parameter("command_timeout_s").value),
+            "imu_timeout_s": float(self.get_parameter("imu_timeout_s").value),
+            "max_step_translation_m": float(self.get_parameter("max_step_translation_m").value),
+            "max_step_yaw_rad": float(self.get_parameter("max_step_yaw_rad").value),
             "scan_maximum_points": int(self.get_parameter("scan_maximum_points").value),
             "icp_maximum_correspondence_m": float(self.get_parameter("icp_maximum_correspondence_m").value),
             "icp_iterations": int(self.get_parameter("icp_iterations").value),

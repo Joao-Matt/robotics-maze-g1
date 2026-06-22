@@ -39,6 +39,23 @@ class LiveKpiMetricsTest(unittest.TestCase):
         self.assertTrue(metrics["available"])
         self.assertEqual(metrics["aligned_samples"], 2)
         self.assertAlmostEqual(metrics["position_rmse_m"], 0.0)
+        self.assertAlmostEqual(metrics["final_position_error_per_meter"], 0.0)
+        self.assertAlmostEqual(metrics["yaw_rmse_deg"], 0.0)
+
+    def test_localization_metrics_report_drift_per_meter_and_jumps(self) -> None:
+        odom = [(0.0, 0.0, 0.0, 0.0), (0.1, 1.1, 0.0, 0.0), (1.0, 1.1, 0.0, 0.0)]
+        truth = [(0.0, 0.0, 0.0, 0.0), (0.1, 1.0, 0.0, 0.0), (1.0, 1.0, 0.0, 0.0)]
+        metrics = localization_metrics(odom, truth)
+        self.assertTrue(metrics["available"])
+        self.assertAlmostEqual(metrics["final_position_error_per_meter"], 0.1)
+        self.assertGreaterEqual(metrics["sudden_translation_jump_count"], 1)
+
+    def test_localization_metrics_estimate_time_offset(self) -> None:
+        truth = [(0.0, 0.0, 0.0, 0.0), (1.0, 1.0, 0.0, 0.0), (2.0, 2.0, 0.0, 0.0), (3.0, 3.0, 0.0, 0.0)]
+        odom = [(1.0, 0.0, 0.0, 0.0), (2.0, 1.0, 0.0, 0.0), (3.0, 2.0, 0.0, 0.0)]
+        metrics = localization_metrics(odom, truth, latency_search_s=1.0, latency_step_s=0.5)
+        self.assertLess(metrics["estimated_time_offset_s"], 0.0)
+        self.assertLess(metrics["latency_corrected_position_rmse_m"], metrics["position_rmse_m"])
 
     def test_command_smoothness(self) -> None:
         metrics = command_smoothness([(0.0, 0.0, 0.0), (1.0, 1.0, 0.5), (2.0, 1.0, 0.0)])

@@ -39,7 +39,7 @@ def stamp_seconds(stamp) -> float:
 class NavigationProbe(Node):
     def __init__(self) -> None:
         super().__init__("phase6_navigation_probe")
-        for name, default in (("seed",123),("duration_s",600.0),("output_dir","/workspace/runs/visual"),("live_visual_dir",""),("goal_source","map_inferred_exit"),("map_to_odom_path",""),("config_path","/workspace/configs/default.yaml")):
+        for name, default in (("seed",123),("duration_s",1200.0),("output_dir","/workspace/runs/visual"),("live_visual_dir",""),("goal_source","map_inferred_exit"),("map_to_odom_path",""),("config_path","/workspace/configs/default.yaml")):
             self.declare_parameter(name, default)
         self.seed = int(self.get_parameter("seed").value)
         self.duration = float(self.get_parameter("duration_s").value)

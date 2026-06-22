@@ -99,6 +99,72 @@ Run oracle path following with the Unitree RL Gym native policy:
 make oracle SEED=123 CELL_SIZE_M=4.0 ORACLE_DURATION=300
 ```
 
+Calibrate the frozen G1 walking policy on open-floor MuJoCo command sweeps:
+
+```bash
+make locomotion-calibrate SEED=123
+make locomotion-calibrate-smoke SEED=123
+make locomotion-calibrate-batch SEED=123 CALIBRATION_BATCH_COUNT=100
+make locomotion-calibrate-batch-smoke SEED=123
+```
+
+The full calibration writes `command_results.csv`, `summary.json`,
+`locomotion_calibration.json`, `report.md`, and `dashboard.html` under
+`runs/calibration/g1_locomotion/seed-<seed>/<timestamp>/`. Navigation
+does not run this sweep automatically. To reuse a measured calibration
+for a navigation run, pass it explicitly:
+
+```bash
+make navigate SEED=123 LOCOMOTION_CALIBRATION=runs/calibration/g1_locomotion/seed-123/latest/locomotion_calibration.json
+```
+
+When `LOCOMOTION_CALIBRATION` is set, `navigate`, `navigate-view`,
+`navigate-full-view`, and `demo` default to `NAV2_LIMIT_MODE=use-calibration`.
+That makes Nav2's rendered `max_vel_x`, `max_speed_xy`, and `max_vel_theta`
+use the measured command envelope through the maze-stability caps in
+`nav2_navigation.calibrated_nav2_*`. This keeps open-floor calibration from
+turning into twitchy wall-proximal commands. To keep the older conservative
+behavior where calibration only caps the configured Nav2 limits, pass
+`NAV2_LIMIT_MODE=cap`.
+
+To try those calibrated limits inside a maze without ROS/Nav2, run the
+direct MuJoCo oracle maze follower with the same JSON:
+
+```bash
+make oracle-calibrated \
+  SEED=123 \
+  CELL_SIZE_M=4.0 \
+  ORACLE_DURATION=300 \
+  LOCOMOTION_CALIBRATION=runs/calibration/g1_locomotion/seed-123/latest/locomotion_calibration.json
+```
+
+By default `oracle-calibrated` uses `CALIBRATED_ORACLE_SPEED_MODE=cap`,
+which keeps the current maze follower speeds and only caps them with
+calibration-derived turn/recovery limits. Use
+`CALIBRATED_ORACLE_SPEED_MODE=use-safe` to actively try the measured safe
+straight speed and preferred tight-turn commands as a more aggressive stress
+test.
+
+The batch calibration does not use `CHECKPOINT` or `VEC_NORMALIZE`; it is
+testing the frozen walking policy, not the PPO maze controller. It writes
+per-seed folders plus `seed_metrics.csv`, `seed_metrics.json`,
+`summary.json`, `report.md`, and `dashboard.html` under
+`runs/calibration/g1_locomotion_seed_batch/seed-<base-seed>/<timestamp>/`.
+Seeds are generated deterministically from `SEED` unless you provide an
+explicit list:
+
+```bash
+make locomotion-calibrate-batch \
+  SEED=123 \
+  CALIBRATION_BATCH_SEEDS="11 22 33 44"
+```
+
+The batch success rate means each seed completed the calibration sweep
+and passed the configured safety gates. It is not a maze goal. The
+defaults require at least 70% stable commands, no falls, no stuck
+commands, no more than 5 non-floor contacts, and discovered safe limits
+of at least 0.40 m/s forward and 0.40 rad/s yaw.
+
 Train the direct MuJoCo PPO velocity controller:
 
 ```bash
@@ -117,7 +183,8 @@ Run the fixed 100-episode random-maze corridor sweep on a trained checkpoint:
 ```bash
 make rl-eval-corridor-sweep \
   CHECKPOINT=runs/rl_velocity/train/<run>/final_model.zip \
-  VEC_NORMALIZE=runs/rl_velocity/train/<run>/vec_normalize.pkl
+  VEC_NORMALIZE=runs/rl_velocity/train/<run>/vec_normalize.pkl \
+  LOCOMOTION_CALIBRATION=runs/calibration/g1_locomotion/seed-123/latest/locomotion_calibration.json
 ```
 
 That suite is defined in
@@ -155,7 +222,7 @@ make slam-view SEED=123 CELL_SIZE_M=4.0
 Run cold-start navigation with SLAM, `m-explore`, Nav2, and rosbag:
 
 ```bash
-make navigate SEED=123 CELL_SIZE_M=4.0 NAVIGATE_DURATION=600
+make navigate SEED=123 CELL_SIZE_M=4.0 NAVIGATE_DURATION=1200
 ```
 
 Open RViz during navigation:
@@ -178,7 +245,7 @@ Run the live interview demo with the seed provided in the interview:
 make demo SEED=123 DEMO_CELL_SIZE_M=2.0
 ```
 
-`make demo` is a thin wrapper around `make navigate-full-view`: it generates the fresh maze for the seed, runs the same MuJoCo + RViz + SLAM + `m-explore` + Nav2 stack, records the run, and forces the live KPI dashboard on. You can also pass `CELL_SIZE_M` or `DEMO_CELL_SIZE_M`, plus `NAVIGATE_DURATION`, `DASHBOARD_PORT`, `DASHBOARD_AUTO_OPEN`, and `NAVIGATE_SKIP_BUILD`.
+`make demo` is a thin wrapper around `make navigate-full-view`: it generates the fresh maze for the seed, runs the same MuJoCo + RViz + SLAM + `m-explore` + Nav2 stack, records the run, and forces the live KPI dashboard on. You can also pass `CELL_SIZE_M` or `DEMO_CELL_SIZE_M`, plus `NAVIGATE_DURATION`, `DASHBOARD_PORT`, `DASHBOARD_AUTO_OPEN`, `NAVIGATE_SKIP_BUILD`, and `LOCOMOTION_CALIBRATION`. When calibration is supplied, the demo uses the calibrated Nav2 maze envelope unless `NAV2_LIMIT_MODE=cap` is set. `NAVIGATE_SKIP_BUILD=auto` skips the ROS package rebuild whenever `ros_ws/install` is already present; run `make prebuild` when you intentionally want to refresh the installed ROS packages.
 
 Expected windows during the demo:
 
@@ -226,7 +293,7 @@ make navigate-full-view DASHBOARD_PORT=8770
 Run the fixed 20-seed held-out navigation batch headlessly:
 
 ```bash
-make heldout-navigate CELL_SIZE_M=2.0 NAVIGATE_DURATION=600
+make heldout-navigate CELL_SIZE_M=2.0 NAVIGATE_DURATION=1200
 ```
 
 This writes per-seed runs under:
@@ -342,6 +409,22 @@ This runs several scan-odometry launch-argument candidates, then scores each run
 ```bash
 make navigate NAVIGATE_LAUNCH_ARGS="scan_maximum_points:=260 icp_min_inlier_ratio:=0.18"
 ```
+
+Odom quality is evaluated before SLAM tuning. The navigation summary reports
+`final_position_error_per_meter`, `yaw_p95_deg`,
+`estimated_time_offset_s`, `distance_scale`, and odom jump counts under
+`localization_evaluation_ground_truth_only`. Use those fields to target
+roughly 0.05-0.10 m final drift per meter, 3-5 deg yaw error over normal
+turns, and zero sudden odom jumps.
+
+The active navigation TF tree is intentionally single-owner: `slam_toolbox`
+owns `map -> odom`, `d435i_scan_odometry` owns `/odom` plus
+`odom -> base_link`, and the MuJoCo bridge disables its active odom TF when
+`external_navigation_odom` is true. Direct odom follows the ROS planar
+convention: `+X` forward, `+Y` left, `+yaw` counter-clockwise, and integrates
+body-frame deltas with `x += cos(yaw) * dx - sin(yaw) * dy`,
+`y += sin(yaw) * dx + cos(yaw) * dy`. Current defaults use IMU orientation yaw
+with 50% scan-matching yaw correction.
 
 ## Outputs
 

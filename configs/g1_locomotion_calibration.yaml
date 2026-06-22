@@ -1,0 +1,49 @@
+g1_locomotion_calibration:
+  policy: unitree_rl_gym_native
+  default_profile: balanced
+
+  timing:
+    warmup_s: 1.0
+    command_s: 8.0
+    settle_s: 0.5
+    control_rate_hz: 50.0
+
+  stability:
+    stable_score_threshold: 75.0
+    arc_infinity_wz_epsilon: 0.05
+    stuck_expected_fraction: 0.25
+    stuck_speed_threshold_mps: 0.03
+    stuck_yaw_threshold_radps: 0.05
+    stuck_duration_s: 2.0
+    fall_min_base_height_m: 0.45
+    fall_max_tilt_rad: 0.90
+    preferred_max_vx_error_mps: 0.35
+    preferred_max_wz_error_radps: 0.35
+    preferred_max_lateral_drift_m: 0.50
+
+  sweeps:
+    straight:
+      vx: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
+      wz: [0.0]
+    reverse_recovery:
+      vx: [-0.2, -0.4, -0.6]
+      wz: [0.0, -0.6, 0.6]
+    pure_rotation:
+      vx: [0.0]
+      wz: [-3.0, -2.5, -2.0, -1.5, -1.2, -1.0, -0.8, -0.6, -0.4, -0.2, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0]
+    arc:
+      vx: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2]
+      wz: [-1.5, -1.0, -0.6, -0.3, 0.3, 0.6, 1.0, 1.5]
+
+  smoke:
+    timing:
+      warmup_s: 0.10
+      command_s: 0.20
+      settle_s: 0.05
+      control_rate_hz: 50.0
+    commands:
+      - {group: straight, vx: 0.2, wz: 0.0}
+      - {group: pure_rotation, vx: 0.0, wz: 0.4}
+      - {group: pure_rotation, vx: 0.0, wz: -0.4}
+      - {group: arc, vx: 0.2, wz: 0.3}
+      - {group: reverse_recovery, vx: -0.2, wz: 0.0}

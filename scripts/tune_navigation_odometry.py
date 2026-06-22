@@ -26,6 +26,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CANDIDATES: list[dict[str, Any]] = [
     {"name": "baseline", "launch_args": {}},
     {
+        "name": "imu_yaw_only",
+        "launch_args": {
+            "scan_yaw_correction_weight": 0.0,
+        },
+    },
+    {
+        "name": "imu_yaw_scan25",
+        "launch_args": {
+            "scan_yaw_correction_weight": 0.25,
+        },
+    },
+    {
+        "name": "scan_yaw_full",
+        "launch_args": {
+            "scan_yaw_correction_weight": 1.0,
+        },
+    },
+    {
+        "name": "translation_scale_1_05",
+        "launch_args": {
+            "odometry_translation_scale": 1.05,
+        },
+    },
+    {
         "name": "tight_icp_gate",
         "launch_args": {
             "icp_min_inlier_ratio": 0.18,
@@ -34,10 +58,10 @@ DEFAULT_CANDIDATES: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "dense_scan",
+        "name": "no_livox_offset_compensation",
         "launch_args": {
-            "scan_maximum_points": 260,
-            "icp_maximum_correspondence_m": 0.30,
+            "sensor_offset_x_m": 0.0,
+            "sensor_offset_y_m": 0.0,
         },
     },
     {
@@ -136,7 +160,11 @@ def _score(summary: dict[str, Any] | None) -> dict[str, float | None]:
             "score": None,
             "localization_rmse_m": None,
             "final_error_m": None,
+            "final_error_per_meter": None,
+            "yaw_p95_deg": None,
             "distance_scale": None,
+            "sudden_translation_jump_count": None,
+            "sudden_yaw_jump_count": None,
             "wall_contact_count": None,
         }
     localization = summary.get("localization_evaluation_ground_truth_only", {})
@@ -144,19 +172,30 @@ def _score(summary: dict[str, Any] | None) -> dict[str, float | None]:
     contact_counts = motion.get("contact_counts", {}) if isinstance(motion, dict) else {}
     rmse = _numeric(localization.get("position_rmse_m")) if isinstance(localization, dict) else None
     final = _numeric(localization.get("final_position_error_m")) if isinstance(localization, dict) else None
+    final_per_meter = _numeric(localization.get("final_position_error_per_meter")) if isinstance(localization, dict) else None
+    yaw_p95_deg = _numeric(localization.get("yaw_p95_deg")) if isinstance(localization, dict) else None
     scale = _numeric(localization.get("distance_scale")) if isinstance(localization, dict) else None
+    translation_jumps = _numeric(localization.get("sudden_translation_jump_count")) if isinstance(localization, dict) else None
+    yaw_jumps = _numeric(localization.get("sudden_yaw_jump_count")) if isinstance(localization, dict) else None
     wall_contacts = _numeric(contact_counts.get("wall")) if isinstance(contact_counts, dict) else None
     if rmse is None or final is None:
         score = None
     else:
         scale_penalty = abs(scale - 1.0) if scale is not None else 1.0
+        drift_penalty = 10.0 * final_per_meter if final_per_meter is not None else 1.0
+        yaw_penalty = 0.05 * (yaw_p95_deg or 0.0) + 2.0 * max(0.0, (yaw_p95_deg or 0.0) - 5.0)
+        jump_penalty = (translation_jumps or 0.0) + (yaw_jumps or 0.0)
         contact_penalty = wall_contacts or 0.0
-        score = rmse + 0.5 * final + 0.25 * scale_penalty + contact_penalty
+        score = rmse + 0.5 * final + drift_penalty + yaw_penalty + jump_penalty + 0.25 * scale_penalty + contact_penalty
     return {
         "score": score,
         "localization_rmse_m": rmse,
         "final_error_m": final,
+        "final_error_per_meter": final_per_meter,
+        "yaw_p95_deg": yaw_p95_deg,
         "distance_scale": scale,
+        "sudden_translation_jump_count": translation_jumps,
+        "sudden_yaw_jump_count": yaw_jumps,
         "wall_contact_count": wall_contacts,
     }
 
@@ -170,7 +209,11 @@ def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         "score",
         "localization_rmse_m",
         "final_error_m",
+        "final_error_per_meter",
+        "yaw_p95_deg",
         "distance_scale",
+        "sudden_translation_jump_count",
+        "sudden_yaw_jump_count",
         "wall_contact_count",
         "final_status",
         "summary_path",

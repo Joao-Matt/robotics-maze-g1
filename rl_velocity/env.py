@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+import json
 import math
 
 import gymnasium as gym
@@ -45,6 +46,7 @@ class G1MazeVelocityEnv(gym.Env):
         training: bool = True,
         record_trajectory: bool = False,
         episode_plan: list[dict[str, Any]] | None = None,
+        locomotion_calibration_path: str | Path | None = None,
     ) -> None:
         super().__init__()
         self.config_path = Path(config_path)
@@ -64,7 +66,15 @@ class G1MazeVelocityEnv(gym.Env):
         self.base_seed = int(seed if seed is not None else 0)
         self.episode_index = 0
 
-        self.command_limits = self.rl_config.get("command_limits", {})
+        self.command_limits = dict(self.rl_config.get("command_limits", {}))
+        self.locomotion_calibration_path = Path(locomotion_calibration_path) if locomotion_calibration_path else None
+        self.locomotion_calibration: dict[str, Any] | None = None
+        if self.locomotion_calibration_path is not None:
+            self.locomotion_calibration = load_locomotion_calibration(self.locomotion_calibration_path)
+            self.command_limits = apply_locomotion_calibration_to_command_limits(
+                self.command_limits,
+                self.locomotion_calibration,
+            )
         self.reward_weights = self.rl_config.get("rewards", {})
         self.termination = self.rl_config.get("termination", {})
         self.sensor_config = self.rl_config.get("sensors", {})
@@ -122,6 +132,8 @@ class G1MazeVelocityEnv(gym.Env):
             "episode_id": self.episode_id,
             "suite_index": self.suite_index,
             "oracle_path_length_m": self.features.total_length_m,
+            "command_limits": dict(self.command_limits),
+            "locomotion_calibration_path": str(self.locomotion_calibration_path) if self.locomotion_calibration_path else None,
         }
         return observation, info
 
@@ -666,6 +678,61 @@ class G1MazeVelocityEnv(gym.Env):
 
 def _scale(value: float, low: float, high: float) -> float:
     return low + (float(value) + 1.0) * 0.5 * (high - low)
+
+
+def load_locomotion_calibration(path: Path) -> dict[str, Any]:
+    values = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(values, dict):
+        raise ValueError(f"Locomotion calibration must be a JSON object: {path}")
+    return values
+
+
+def apply_locomotion_calibration_to_command_limits(
+    command_limits: dict[str, Any],
+    calibration: dict[str, Any],
+) -> dict[str, Any]:
+    """Return RL action limits capped by measured locomotion calibration scalars."""
+    limits = dict(command_limits)
+    recommended = calibration.get("recommended_safe_limits", {})
+    calibrated_limits = calibration.get("command_limits", {})
+    if not isinstance(recommended, dict):
+        recommended = {}
+    if not isinstance(calibrated_limits, dict):
+        calibrated_limits = {}
+
+    max_forward = _first_finite(
+        recommended.get("max_safe_vx"),
+        calibration.get("selected_max_forward_mps"),
+        calibrated_limits.get("max_forward_mps"),
+    )
+    if max_forward is not None:
+        current = float(limits.get("vx_max_mps", max_forward))
+        limits["vx_max_mps"] = min(current, max(0.0, max_forward))
+
+    max_reverse = _first_finite(calibrated_limits.get("max_reverse_mps"))
+    if max_reverse is not None and max_reverse < 0.0:
+        current = float(limits.get("vx_min_mps", max_reverse))
+        limits["vx_min_mps"] = max(current, max_reverse)
+
+    max_yaw = _first_finite(recommended.get("max_safe_wz"), calibrated_limits.get("max_yaw_rate_radps"))
+    if max_yaw is not None:
+        current = abs(float(limits.get("yaw_rate_max_radps", max_yaw)))
+        limits["yaw_rate_max_radps"] = min(current, max(0.0, abs(max_yaw)))
+
+    return limits
+
+
+def _first_finite(*values: object) -> float | None:
+    for value in values:
+        try:
+            if value is None:
+                continue
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return number
+    return None
 
 
 def _norm_clip(value: float, scale: float) -> float:

@@ -97,6 +97,28 @@ def frontier_clusters(data, width: int, height: int, minimum_size: int = 5) -> l
     return clusters
 
 
+def occupied_clearance_cells(data, width: int, height: int, x: int, y: int, max_cells: int = 20) -> float:
+    """Distance in cells from a free map cell to the nearest occupied cell."""
+    grid = np.asarray(data, dtype=np.int16).reshape(height, width)
+    if not (0 <= x < width and 0 <= y < height) or grid[y, x] != 0:
+        return 0.0
+    max_cells = max(1, int(max_cells))
+    best: float | None = None
+    for radius in range(1, max_cells + 1):
+        y0, y1 = max(0, y - radius), min(height - 1, y + radius)
+        x0, x1 = max(0, x - radius), min(width - 1, x + radius)
+        for ny in range(y0, y1 + 1):
+            for nx in range(x0, x1 + 1):
+                if abs(nx - x) != radius and abs(ny - y) != radius:
+                    continue
+                if grid[ny, nx] > 50:
+                    distance = math.hypot(nx - x, ny - y)
+                    best = distance if best is None else min(best, distance)
+        if best is not None:
+            return best
+    return float(max_cells)
+
+
 def frontier_goal(cluster, data, width: int, height: int, setback_cells: int = 5) -> tuple[int, int] | None:
     """Choose a free goal near a frontier but biased into observed space."""
     grid=np.asarray(data,dtype=np.int16).reshape(height,width)
@@ -107,7 +129,8 @@ def frontier_goal(cluster, data, width: int, height: int, setback_cells: int = 5
         for x in range(max(0,int(cx)-radius),min(width,int(cx)+radius+1)):
             if grid[y,x]!=0: continue
             unknown=sum(grid[ny,nx]<0 for ny in range(max(0,y-2),min(height,y+3)) for nx in range(max(0,x-2),min(width,x+3)))
-            candidates.append((unknown,(x-cx)**2+(y-cy)**2,x,y))
+            clearance=occupied_clearance_cells(data,width,height,x,y,max_cells=max(2,radius*2))
+            candidates.append((unknown,-clearance,(x-cx)**2+(y-cy)**2,x,y))
     if not candidates:return None
-    _,_,x,y=min(candidates)
+    *_,x,y=min(candidates)
     return int(x),int(y)

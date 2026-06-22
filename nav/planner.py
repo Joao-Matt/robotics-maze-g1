@@ -109,7 +109,7 @@ def _bfs_path(grid: np.ndarray, start: Cell, goal: Cell) -> list[Cell] | None:
         current = queue.popleft()
         if current == goal:
             return _reconstruct(parents, goal)
-        for neighbor in neighbors_4(current):
+        for neighbor in _ordered_neighbors(current, start):
             if neighbor in parents:
                 continue
             if not is_inside(neighbor, height, width):
@@ -152,7 +152,7 @@ def _heading_astar_path(
             best_goal_state = current_state
             break
 
-        for neighbor in neighbors_4(current_cell):
+        for neighbor in _ordered_neighbors(current_cell, start):
             if not is_inside(neighbor, height, width):
                 continue
             if grid[neighbor] != FREE:
@@ -205,3 +205,16 @@ def _cell_delta(a: Cell, b: Cell) -> Cell:
 
 def _manhattan(a: Cell, b: Cell) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _ordered_neighbors(cell: Cell, start: Cell) -> list[Cell]:
+    neighbors = list(neighbors_4(cell))
+    neighbors.sort(key=lambda neighbor: _neighbor_priority(cell, neighbor, start))
+    return neighbors
+
+
+def _neighbor_priority(current: Cell, neighbor: Cell, start: Cell) -> tuple[int, int, int, int, int]:
+    delta_row, delta_col = _cell_delta(current, neighbor)
+    away_gain = _manhattan(neighbor, start) - _manhattan(current, start)
+    positive_x = delta_col
+    return -away_gain, -positive_x, abs(delta_row), neighbor[0], neighbor[1]

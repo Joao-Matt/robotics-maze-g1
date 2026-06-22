@@ -73,9 +73,12 @@ class G1MujocoBridge(Node):
         self.declare_parameter("livox_frame_id", "livox_mid360_frame")
         self.declare_parameter("livox_mount_pos_m", [0.05, 0.0, 0.29])
         self.declare_parameter("scan_command_guard_enabled", True)
-        self.declare_parameter("scan_forward_stop_m", 0.90)
-        self.declare_parameter("scan_reverse_stop_m", 0.70)
-        self.declare_parameter("scan_side_stop_m", 0.45)
+        self.declare_parameter("scan_forward_stop_m", 0.55)
+        self.declare_parameter("scan_forward_slow_m", 1.20)
+        self.declare_parameter("scan_reverse_stop_m", 0.50)
+        self.declare_parameter("scan_reverse_slow_m", 1.00)
+        self.declare_parameter("scan_side_stop_m", 0.35)
+        self.declare_parameter("scan_side_slow_m", 0.75)
         self.declare_parameter("scan_guard_angle_deg", 35.0)
         self.declare_parameter("depth_only", False)
         self.declare_parameter("hold_pose", True)
@@ -457,16 +460,41 @@ class G1MujocoBridge(Node):
             return command
         vx = command.vx
         yaw_rate = command.yaw_rate
-        if vx > 0.0 and self.livox_front_min < float(self.get_parameter("scan_forward_stop_m").value):
-            vx = 0.0
-        if vx < 0.0 and self.livox_rear_min < float(self.get_parameter("scan_reverse_stop_m").value):
-            vx = 0.0
+        if vx > 0.0:
+            vx *= self._proximity_scale(
+                self.livox_front_min,
+                float(self.get_parameter("scan_forward_stop_m").value),
+                float(self.get_parameter("scan_forward_slow_m").value),
+            )
+        if vx < 0.0:
+            vx *= self._proximity_scale(
+                self.livox_rear_min,
+                float(self.get_parameter("scan_reverse_stop_m").value),
+                float(self.get_parameter("scan_reverse_slow_m").value),
+            )
         side_stop = float(self.get_parameter("scan_side_stop_m").value)
+        side_slow = float(self.get_parameter("scan_side_slow_m").value)
         if yaw_rate > 0.0 and self.livox_left_min < side_stop:
             yaw_rate = 0.0
+        elif yaw_rate > 0.0:
+            yaw_rate *= self._proximity_scale(self.livox_left_min, side_stop, side_slow)
         if yaw_rate < 0.0 and self.livox_right_min < side_stop:
             yaw_rate = 0.0
+        elif yaw_rate < 0.0:
+            yaw_rate *= self._proximity_scale(self.livox_right_min, side_stop, side_slow)
         return VelocityCommand(vx=vx, vy=command.vy, yaw_rate=yaw_rate)
+
+    @staticmethod
+    def _proximity_scale(distance: float, stop_m: float, slow_m: float) -> float:
+        if not math.isfinite(distance):
+            return 1.0
+        stop_m = max(0.0, stop_m)
+        slow_m = max(stop_m + 1e-6, slow_m)
+        if distance <= stop_m:
+            return 0.0
+        if distance >= slow_m:
+            return 1.0
+        return (distance - stop_m) / (slow_m - stop_m)
 
     def _publish_joints(self, stamp: Time) -> None:
         message = JointState()

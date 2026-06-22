@@ -164,6 +164,30 @@ class RlVelocityEnvHelperTest(unittest.TestCase):
         self.assertAlmostEqual(command.vy, 0.20)
         self.assertAlmostEqual(command.yaw_rate, 0.0)
 
+    def test_locomotion_calibration_caps_rl_command_limits(self) -> None:
+        from rl_velocity.env import apply_locomotion_calibration_to_command_limits
+
+        limits = {
+            "vx_min_mps": -2.0,
+            "vx_max_mps": 2.0,
+            "vy_min_mps": -1.5,
+            "vy_max_mps": 1.5,
+            "yaw_rate_max_radps": 3.0,
+        }
+        calibration = {
+            "selected_max_forward_mps": 1.4,
+            "command_limits": {"max_reverse_mps": -0.6},
+            "recommended_safe_limits": {"max_safe_vx": 1.4, "max_safe_wz": 2.0},
+        }
+
+        capped = apply_locomotion_calibration_to_command_limits(limits, calibration)
+
+        self.assertEqual(capped["vx_max_mps"], 1.4)
+        self.assertEqual(capped["vx_min_mps"], -0.6)
+        self.assertEqual(capped["yaw_rate_max_radps"], 2.0)
+        self.assertEqual(capped["vy_min_mps"], -1.5)
+        self.assertEqual(capped["vy_max_mps"], 1.5)
+
 
 @unittest.skipUnless(
     all(importlib.util.find_spec(name) for name in ("numpy", "gymnasium", "mujoco", "torch")),

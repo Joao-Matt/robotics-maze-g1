@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ros_ws" / "src" / "g1_nav_bringup"))
 
 from g1_nav_bringup.corridor_recenter import select_corridor_center_goal  # noqa: E402
+from g1_nav_bringup.navigation_evaluation import frontier_goal, occupied_clearance_cells  # noqa: E402
 from g1_nav_bringup.run_termination import (  # noqa: E402
     is_run_success_status,
     is_terminal_run_status,
@@ -105,6 +106,27 @@ class CorridorRecenterTest(unittest.TestCase):
         )
 
         self.assertIsNone(goal)
+
+
+class FrontierGoalClearanceTest(unittest.TestCase):
+    def test_frontier_goal_prefers_corridor_center_over_nearest_wall_side(self) -> None:
+        width = 9
+        height = 9
+        data = []
+        for _row in range(height):
+            for col in range(width):
+                data.append(100 if col in {0, width - 1} else 0)
+        cluster = [(2, 4), (2, 5), (2, 3)]
+
+        goal = frontier_goal(cluster, data, width, height, setback_cells=4)
+
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertGreaterEqual(goal[0], 3)
+        self.assertGreater(
+            occupied_clearance_cells(data, width, height, goal[0], goal[1]),
+            occupied_clearance_cells(data, width, height, 1, goal[1]),
+        )
 
 
 if __name__ == "__main__":

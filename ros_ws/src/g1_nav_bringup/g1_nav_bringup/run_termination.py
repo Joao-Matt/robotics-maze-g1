@@ -42,7 +42,7 @@ def parse_duration_s(value: object) -> float | None:
     return duration if math.isfinite(duration) and duration > 0.0 else None
 
 
-def run_duration_s(output_dir: Path, configured_duration: object, default_duration_s: float = 600.0) -> float:
+def run_duration_s(output_dir: Path, configured_duration: object, default_duration_s: float = 1200.0) -> float:
     manifest = output_dir / "run_manifest.json"
     if manifest.is_file():
         try:

@@ -43,6 +43,13 @@ class MazeFallbackGoal(Node):
             ("ray_step_m", 0.2),
             ("heading_samples", 3),
             ("max_heading_offset_deg", 10.0),
+            ("wide_heading_offsets_deg", "0,30,-30,60,-60,90,-90,135,-135,180"),
+            ("start_away_bias_weight", 1.5),
+            ("positive_x_bias_weight", 0.8),
+            ("dead_end_memory_s", 90.0),
+            ("dead_end_radius_m", 2.0),
+            ("dead_end_heading_deg", 50.0),
+            ("dead_end_penalty", 12.0),
             ("plan_heading_max_age_s", 8.0),
             ("motion_heading_window_s", 4.0),
             ("min_motion_heading_m", 0.25),
@@ -57,6 +64,7 @@ class MazeFallbackGoal(Node):
         ):
             self.declare_parameter(name, default)
         self.map_pose = None
+        self.start_xy = None
         self.pose_history = []
         self.map = None
         self.last_plan = []
@@ -76,6 +84,7 @@ class MazeFallbackGoal(Node):
         self.recovery_pending = False
         self.recovery_attempts = 0
         self.recovery_note = None
+        self.dead_end_memory = []
         self.events = []
         self.navigate = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.resume_pub = self.create_publisher(Bool, "/explore/resume", 10)
@@ -285,6 +294,8 @@ class MazeFallbackGoal(Node):
         }
         details.update(extra)
         self.events.append(details)
+        if event != "succeeded" and self.current_goal_kind in {"unknown_edge_probe", "unknown_edge_alternate"}:
+            self._remember_dead_end(event)
         self.goal_active = False
         self.goal_handle = None
         self.last_goal_end_wall = time.monotonic()
@@ -331,42 +342,22 @@ class MazeFallbackGoal(Node):
         step = float(self.get_parameter("ray_step_m").value)
         samples = max(1, int(self.get_parameter("heading_samples").value))
         span = math.radians(float(self.get_parameter("max_heading_offset_deg").value))
-        if samples == 1:
-            offsets = [0.0]
-        else:
-            offsets = [-span + (2.0 * span * index / (samples - 1)) for index in range(samples)]
-            offsets.sort(key=abs)
-
-        best = None
-        best_relaxed = None
-        for offset in offsets:
-            angle = yaw + offset
-            direction = math.cos(angle), math.sin(angle)
-            last_free = 0.0
-            first_unknown = None
-            distance = max(step, 0.05)
-            while distance <= lookahead:
-                value = self._map_value(current[0] + direction[0] * distance, current[1] + direction[1] * distance)
-                if value >= 65:
-                    break
-                if value < 0:
-                    first_unknown = distance
-                    break
-                last_free = distance
-                distance += step
-
-            if first_unknown is not None:
-                target_distance = min(lookahead, max(minimum, first_unknown + extension))
-                point = (current[0] + direction[0] * target_distance, current[1] + direction[1] * target_distance)
-                clearance = self._occupied_clearance(point)
-                score = target_distance + 2.0 * clearance - 1.0 * abs(offset)
-                candidate = (score, point, "unknown_edge_probe", clearance)
-                if best_relaxed is None or candidate[3] > best_relaxed[3] or (
-                    candidate[3] == best_relaxed[3] and candidate[0] > best_relaxed[0]
-                ):
-                    best_relaxed = candidate
-                if clearance >= self._min_goal_clearance() and (best is None or candidate[0] > best[0]):
-                    best = candidate
+        offsets = self._narrow_heading_offsets(samples, span)
+        best, best_relaxed = self._scan_unknown_edge_candidates(
+            current, yaw, offsets, minimum, lookahead, extension, step, "unknown_edge_probe"
+        )
+        wide_offsets = self._wide_heading_offsets(offsets)
+        wide_best, wide_relaxed = self._scan_unknown_edge_candidates(
+            current, yaw, wide_offsets, minimum, lookahead, extension, step, "unknown_edge_alternate"
+        )
+        if wide_best is not None and (best is None or wide_best[0] > best[0]):
+            best = wide_best
+        if wide_relaxed is not None and (
+            best_relaxed is None
+            or wide_relaxed[3] > best_relaxed[3]
+            or (wide_relaxed[3] == best_relaxed[3] and wide_relaxed[0] > best_relaxed[0])
+        ):
+            best_relaxed = wide_relaxed
 
         if best is None:
             best = best_relaxed
@@ -376,6 +367,116 @@ class MazeFallbackGoal(Node):
         if point is None:
             return None, None, None
         return point, None, best[2]
+
+    @staticmethod
+    def _narrow_heading_offsets(samples, span):
+        if samples == 1:
+            return [0.0]
+        offsets = [-span + (2.0 * span * index / (samples - 1)) for index in range(samples)]
+        offsets.sort(key=abs)
+        return offsets
+
+    def _wide_heading_offsets(self, narrow_offsets):
+        raw = str(self.get_parameter("wide_heading_offsets_deg").value)
+        offsets = []
+        for part in raw.replace(";", ",").split(","):
+            try:
+                offsets.append(math.radians(float(part.strip())))
+            except ValueError:
+                pass
+        if not offsets:
+            offsets = [math.radians(value) for value in (0, 30, -30, 60, -60, 90, -90, 135, -135, 180)]
+        seen = {round(value, 6) for value in narrow_offsets}
+        wide = []
+        for offset in offsets:
+            key = round(offset, 6)
+            if key not in seen:
+                wide.append(offset)
+                seen.add(key)
+        wide.sort(key=abs)
+        return wide
+
+    def _scan_unknown_edge_candidates(self, current, yaw, offsets, minimum, lookahead, extension, step, kind):
+        best = None
+        best_relaxed = None
+        for offset in offsets:
+            angle = yaw + offset
+            direction = math.cos(angle), math.sin(angle)
+            first_unknown = None
+            distance = max(step, 0.05)
+            while distance <= lookahead:
+                value = self._map_value(current[0] + direction[0] * distance, current[1] + direction[1] * distance)
+                if value >= 65:
+                    break
+                if value < 0:
+                    first_unknown = distance
+                    break
+                distance += step
+
+            if first_unknown is None:
+                continue
+            target_distance = min(lookahead, max(minimum, first_unknown + extension))
+            point = (current[0] + direction[0] * target_distance, current[1] + direction[1] * target_distance)
+            clearance = self._occupied_clearance(point)
+            score = target_distance + 2.0 * clearance - 1.0 * abs(offset)
+            score += self._direction_priority(current, point, direction)
+            score -= self._dead_end_penalty(point, angle)
+            candidate = (score, point, kind, clearance, angle)
+            if best_relaxed is None or candidate[3] > best_relaxed[3] or (
+                candidate[3] == best_relaxed[3] and candidate[0] > best_relaxed[0]
+            ):
+                best_relaxed = candidate
+            if clearance >= self._min_goal_clearance() and (best is None or candidate[0] > best[0]):
+                best = candidate
+        return best, best_relaxed
+
+    def _direction_priority(self, current, point, direction):
+        score = float(self.get_parameter("positive_x_bias_weight").value) * float(direction[0])
+        if self.start_xy is not None:
+            before = math.hypot(current[0] - self.start_xy[0], current[1] - self.start_xy[1])
+            after = math.hypot(point[0] - self.start_xy[0], point[1] - self.start_xy[1])
+            score += float(self.get_parameter("start_away_bias_weight").value) * (after - before)
+        return score
+
+    def _remember_dead_end(self, reason):
+        if self.current_goal is None:
+            return
+        current = self._current_xy()
+        if current is None:
+            return
+        dx, dy = self.current_goal[0] - current[0], self.current_goal[1] - current[1]
+        heading = math.atan2(dy, dx) if math.hypot(dx, dy) > 1e-6 else self._current_yaw()
+        self.dead_end_memory.append({
+            "time": time.monotonic(),
+            "goal": self.current_goal,
+            "heading": heading,
+            "reason": reason,
+        })
+        self._prune_dead_ends()
+
+    def _prune_dead_ends(self):
+        limit = float(self.get_parameter("dead_end_memory_s").value)
+        if limit <= 0.0:
+            self.dead_end_memory = []
+            return
+        cutoff = time.monotonic() - limit
+        self.dead_end_memory = [entry for entry in self.dead_end_memory if entry["time"] >= cutoff]
+
+    def _dead_end_penalty(self, point, angle):
+        self._prune_dead_ends()
+        radius = float(self.get_parameter("dead_end_radius_m").value)
+        heading_limit = math.radians(float(self.get_parameter("dead_end_heading_deg").value))
+        penalty = float(self.get_parameter("dead_end_penalty").value)
+        total = 0.0
+        for entry in self.dead_end_memory:
+            goal = entry["goal"]
+            heading = entry.get("heading")
+            if math.hypot(point[0] - goal[0], point[1] - goal[1]) > radius:
+                continue
+            if heading is not None and abs(_angle_diff(angle, heading)) > heading_limit:
+                continue
+            total += penalty
+        return total
 
     def _preferred_yaw(self, current):
         plan_age = time.monotonic() - self.last_plan_wall
@@ -394,6 +495,10 @@ class MazeFallbackGoal(Node):
             dx, dy = latest[1] - sample[1], latest[2] - sample[2]
             if math.hypot(dx, dy) >= float(self.get_parameter("min_motion_heading_m").value):
                 return math.atan2(dy, dx), "recent_motion"
+
+        yaw = self._current_yaw()
+        if yaw is not None:
+            return yaw, "current_pose_yaw"
 
         return None, None
 
@@ -475,6 +580,8 @@ class MazeFallbackGoal(Node):
         self.map_pose = msg
         p = msg.pose.pose.position
         now = time.monotonic()
+        if self.start_xy is None:
+            self.start_xy = (float(p.x), float(p.y))
         self.pose_history.append((now, float(p.x), float(p.y)))
         cutoff = now - max(8.0, float(self.get_parameter("motion_heading_window_s").value) + 1.0)
         self.pose_history = [sample for sample in self.pose_history if sample[0] >= cutoff]
@@ -521,8 +628,14 @@ class MazeFallbackGoal(Node):
             "m_explore_recovery_pending": self.recovery_pending,
             "m_explore_recovery_attempts": self.recovery_attempts,
             "m_explore_recovery_note": self.recovery_note,
+            "start_xy": self.start_xy,
+            "dead_end_memory_count": len(self.dead_end_memory),
             "events": self.events[-20:],
         }, sort_keys=True)))
+
+
+def _angle_diff(a, b):
+    return math.atan2(math.sin(a - b), math.cos(a - b))
 
 
 def main():

@@ -5,7 +5,7 @@ from launch.actions import DeclareLaunchArgument, EmitEvent, ExecuteProcess, Log
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -52,7 +52,7 @@ def generate_launch_description():
     rviz=Node(package="rviz2",executable="rviz2",arguments=["-d",PathJoinSubstitution([nav_share,"rviz","nav2_slam.rviz"])],condition=IfCondition(rviz_enabled))
     shutdown=RegisterEventHandler(OnProcessExit(target_action=probe,on_exit=[EmitEvent(event=Shutdown(reason="Nav2 evaluation complete"))]))
     return LaunchDescription([
-        DeclareLaunchArgument("seed",default_value="123"),DeclareLaunchArgument("duration_s",default_value="600"),
+        DeclareLaunchArgument("seed",default_value="123"),DeclareLaunchArgument("duration_s",default_value=EnvironmentVariable("NAVIGATE_DURATION",default_value="1200")),
         DeclareLaunchArgument("output_dir",default_value="/workspace/runs/visual"),DeclareLaunchArgument("config_path",default_value="/workspace/configs/default.yaml"),
         DeclareLaunchArgument("port",default_value="8765"),DeclareLaunchArgument("with_rviz",default_value="false"),
         DeclareLaunchArgument("unitree_rl_gym_repo",default_value="/workspace/third_party/unitree_rl_gym"),

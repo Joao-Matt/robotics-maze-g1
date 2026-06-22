@@ -9,6 +9,7 @@ import json
 import math
 import sys
 import time
+from dataclasses import replace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -53,6 +54,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "default.yaml")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "runs" / "visual")
     parser.add_argument("--locomotion-policy", default="unitree_rl_gym_native")
+    parser.add_argument("--locomotion-calibration", type=Path, default=None)
+    parser.add_argument(
+        "--calibrated-speed-mode",
+        choices=("cap", "use-safe"),
+        default="cap",
+        help="cap keeps configured oracle speeds under calibration limits; use-safe actively uses calibrated straight/turn commands.",
+    )
     parser.add_argument(
         "--unitree-rl-gym-repo",
         type=Path,
@@ -100,6 +108,15 @@ def main() -> int:
             raise ValueError(f"Production supports only unitree_rl_gym_native, got {args.locomotion_policy!r}.")
         corridor_width_m = apply_cell_size_override(config, args.corridor_width_m)
         follower_config = _follower_config(config)
+        calibration_summary = None
+        if args.locomotion_calibration is not None:
+            calibration = _load_locomotion_calibration(args.locomotion_calibration)
+            follower_config, calibration_summary = _apply_locomotion_calibration_to_follower_config(
+                follower_config,
+                calibration,
+                mode=args.calibrated_speed_mode,
+                calibration_path=args.locomotion_calibration,
+            )
         maze = generate_maze_from_config(config, args.seed)
         oracle_values = config.get("oracle", {})
         dense_plan = plan_oracle_path(
@@ -175,6 +192,7 @@ def main() -> int:
                 "arc_turn_segments": len(turn_path.arc_segments),
                 "turns": _turn_counts(turn_path),
                 "controller_config": follower_config.__dict__,
+                "locomotion_calibration": calibration_summary,
                 "elapsed_wall_s": round(time.time() - started, 3),
                 "artifacts": {key: str(path) for key, path in artifacts.items()},
             }
@@ -484,6 +502,107 @@ def _follower_config(config: dict) -> TurnAwareFollowerConfig:
         stuck_min_progress_m=float(values.get("stuck_min_progress_m", 0.08)),
         max_recovery_attempts=int(values.get("max_recovery_attempts", 2)),
     )
+
+
+def _load_locomotion_calibration(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"Locomotion calibration does not exist: {path}")
+    values = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(values, dict):
+        raise ValueError(f"Locomotion calibration must be a JSON object: {path}")
+    return values
+
+
+def _apply_locomotion_calibration_to_follower_config(
+    config: TurnAwareFollowerConfig,
+    calibration: dict,
+    *,
+    mode: str,
+    calibration_path: Path | None = None,
+) -> tuple[TurnAwareFollowerConfig, dict[str, object]]:
+    limits = calibration.get("recommended_safe_limits", {})
+    command_limits = calibration.get("command_limits", {})
+    max_safe_vx = _first_float(
+        limits.get("max_safe_vx"),
+        calibration.get("selected_max_forward_mps"),
+        command_limits.get("max_forward_mps") if isinstance(command_limits, dict) else None,
+        default=config.forward_speed_mps,
+    )
+    max_safe_wz = _first_float(
+        limits.get("max_safe_wz"),
+        command_limits.get("max_yaw_rate_radps") if isinstance(command_limits, dict) else None,
+        default=config.max_yaw_rate_radps,
+    )
+    arc = _preferred_tight_arc(calibration)
+    recovery = _preferred_reverse(calibration)
+    if mode == "use-safe":
+        forward_speed = max(0.0, max_safe_vx)
+        max_yaw = max(0.0, max_safe_wz)
+        arc_forward = max(0.0, _first_float(arc.get("cmd_vx"), default=min(config.arc_turn_forward_speed_mps, forward_speed)))
+        arc_yaw = max(0.0, abs(_first_float(arc.get("cmd_wz"), default=min(config.arc_turn_yaw_rate_radps, max_yaw))))
+        recovery_reverse = _first_float(recovery.get("cmd_vx"), default=config.recovery_reverse_speed_mps)
+    elif mode == "cap":
+        forward_speed = min(config.forward_speed_mps, max(0.0, max_safe_vx))
+        max_yaw = min(config.max_yaw_rate_radps, max(0.0, max_safe_wz))
+        arc_forward = min(config.arc_turn_forward_speed_mps, max(0.0, max_safe_vx))
+        arc_yaw = min(config.arc_turn_yaw_rate_radps, max(0.0, max_safe_wz))
+        recovery_reverse = max(config.recovery_reverse_speed_mps, _first_float(recovery.get("cmd_vx"), default=config.recovery_reverse_speed_mps))
+    else:
+        raise ValueError(f"Unsupported calibrated speed mode: {mode}")
+    calibrated = replace(
+        config,
+        forward_speed_mps=forward_speed,
+        max_yaw_rate_radps=max_yaw,
+        arc_turn_forward_speed_mps=arc_forward,
+        arc_turn_yaw_rate_radps=arc_yaw,
+        recovery_reverse_speed_mps=min(0.0, recovery_reverse),
+    )
+    return calibrated, {
+        "path": str(calibration_path) if calibration_path else None,
+        "mode": mode,
+        "source_status": calibration.get("status"),
+        "ground_truth_used_for_calibration_metrics": bool(calibration.get("ground_truth_used_for_calibration_metrics")),
+        "applied_limits": {
+            "forward_speed_mps": calibrated.forward_speed_mps,
+            "max_yaw_rate_radps": calibrated.max_yaw_rate_radps,
+            "arc_turn_forward_speed_mps": calibrated.arc_turn_forward_speed_mps,
+            "arc_turn_yaw_rate_radps": calibrated.arc_turn_yaw_rate_radps,
+            "recovery_reverse_speed_mps": calibrated.recovery_reverse_speed_mps,
+        },
+        "raw_recommended_safe_limits": limits if isinstance(limits, dict) else {},
+    }
+
+
+def _preferred_tight_arc(calibration: dict) -> dict[str, object]:
+    preferred = calibration.get("preferred_arc_commands", {})
+    if isinstance(preferred, dict):
+        for key in ("tight_turn", "wide_curve"):
+            rows = preferred.get(key, [])
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                return rows[0]
+    return {}
+
+
+def _preferred_reverse(calibration: dict) -> dict[str, object]:
+    rows = calibration.get("recovery_safe_commands", [])
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and _first_float(row.get("cmd_vx"), default=0.0) < 0.0:
+                return row
+    return {}
+
+
+def _first_float(*values: object, default: float = 0.0) -> float:
+    for value in values:
+        try:
+            if value is None:
+                continue
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return number
+    return float(default)
 
 
 def _turn_counts(path) -> dict[str, int]:

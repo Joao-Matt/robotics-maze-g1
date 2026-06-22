@@ -15,6 +15,7 @@ from rclpy.node import Node
 from rosgraph_msgs.msg import Clock as ClockMessage
 from std_msgs.msg import String
 
+from g1_nav_bringup.live_kpi_metrics import localization_metrics as compute_localization_metrics
 from g1_nav_bringup.run_termination import is_run_success_status, is_terminal_run_status, run_duration_s, termination_source
 from sim.mujoco_runner import _write_png
 from sim.run_context import finalize_manifest
@@ -45,7 +46,7 @@ def _stamp(stamp):return float(stamp.sec)+float(stamp.nanosec)*1e-9
 class ExplorationReporter(Node):
     def __init__(self):
         super().__init__("exploration_reporter")
-        for name,default in (("output_dir","/workspace/runs"),("live_visual_dir",""),("seed",123),("duration_s",600.0),("corridor_width_m",2.0),("config_path","/workspace/configs/default.yaml"),("m_explore_complete_terminal",False),("goal_reached_tolerance_m",0.5)):
+        for name,default in (("output_dir","/workspace/runs"),("live_visual_dir",""),("seed",123),("duration_s",1200.0),("corridor_width_m",2.0),("config_path","/workspace/configs/default.yaml"),("m_explore_complete_terminal",False),("goal_reached_tolerance_m",0.5)):
             self.declare_parameter(name,default)
         self.out=Path(str(self.get_parameter("output_dir").value)); self.out.mkdir(parents=True,exist_ok=True)
         self.duration_s=run_duration_s(self.out,self.get_parameter("duration_s").value)
@@ -121,10 +122,12 @@ class ExplorationReporter(Node):
         indices=np.searchsorted(actual[:,0],odom[:,0]); indices=np.clip(indices,0,len(actual)-1); previous=np.maximum(0,indices-1); choose_previous=np.abs(actual[previous,0]-odom[:,0])<np.abs(actual[indices,0]-odom[:,0]); indices=np.where(choose_previous,previous,indices)
         truth=actual[indices,1:3]; position=np.linalg.norm(predicted-truth,axis=1); predicted_yaw=odom[:,3]+rotation; yaw=np.abs(np.arctan2(np.sin(predicted_yaw-actual[indices,3]),np.cos(predicted_yaw-actual[indices,3])))
         with csv_path.open("w",newline="",encoding="utf-8") as output:
-            writer=csv.writer(output); writer.writerow(["sim_time_s","odom_world_x","odom_world_y","truth_x","truth_y","position_error_m","yaw_error_rad"])
-            writer.writerows((odom[i,0],predicted[i,0],predicted[i,1],truth[i,0],truth[i,1],position[i],yaw[i]) for i in range(len(odom)))
+            writer=csv.writer(output); writer.writerow(["sim_time_s","odom_world_x","odom_world_y","truth_x","truth_y","x_error_m","y_error_m","position_error_m","odom_yaw_world_rad","truth_yaw_rad","yaw_error_rad"])
+            writer.writerows((odom[i,0],predicted[i,0],predicted[i,1],truth[i,0],truth[i,1],predicted[i,0]-truth[i,0],predicted[i,1]-truth[i,1],position[i],predicted_yaw[i],actual[indices[i],3],yaw[i]) for i in range(len(odom)))
+        metrics=compute_localization_metrics(list(self.odom_eval),list(self.actual_eval))
+        if metrics.get("available"):return metrics
         odom_distance=float(np.linalg.norm(np.diff(predicted,axis=0),axis=1).sum()); truth_distance=float(np.linalg.norm(np.diff(truth,axis=0),axis=1).sum())
-        return {"aligned_samples":len(position),"position_rmse_m":float(np.sqrt(np.mean(position**2))),"position_mae_m":float(position.mean()),"position_p95_m":float(np.percentile(position,95)),"final_position_error_m":float(position[-1]),"yaw_rmse_rad":float(np.sqrt(np.mean(yaw**2))),"yaw_p95_rad":float(np.percentile(yaw,95)),"odom_distance_m":odom_distance,"truth_distance_m":truth_distance,"distance_scale":odom_distance/truth_distance if truth_distance>1e-6 else None}
+        return {"available":False,"aligned_samples":len(position),"position_rmse_m":float(np.sqrt(np.mean(position**2))),"position_mae_m":float(position.mean()),"position_p95_m":float(np.percentile(position,95)),"final_position_error_m":float(position[-1]),"yaw_rmse_rad":float(np.sqrt(np.mean(yaw**2))),"yaw_p95_rad":float(np.percentile(yaw,95)),"odom_distance_m":odom_distance,"truth_distance_m":truth_distance,"distance_scale":odom_distance/truth_distance if truth_distance>1e-6 else None}
     def _map(self,msg):
         self.map=msg
         known=int(np.count_nonzero(np.asarray(msg.data)>=0)); elapsed=self._now()-self.started_at

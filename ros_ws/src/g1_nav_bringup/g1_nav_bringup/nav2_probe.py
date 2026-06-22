@@ -76,7 +76,7 @@ def command_metrics(rows):
 class Probe(Node):
     def __init__(self):
         super().__init__("nav2_probe")
-        defaults = [("seed", 123), ("duration_s", 600.0), ("output_dir", "/workspace/runs/visual"),
+        defaults = [("seed", 123), ("duration_s", 1200.0), ("output_dir", "/workspace/runs/visual"),
                     ("live_visual_dir", ""), ("config_path", "/workspace/configs/default.yaml"),
                     ("corridor_width_m", 2.0), ("map_to_odom_path", ""), ("goal_map_to_odom_path", "")]
         for name, default in defaults:

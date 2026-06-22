@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--stage", default=None)
     parser.add_argument("--unitree-rl-gym-repo", type=Path, default=PROJECT_ROOT / "third_party" / "unitree_rl_gym")
+    parser.add_argument("--locomotion-calibration", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -52,6 +53,7 @@ def main() -> int:
         normalize_observations=False,
         normalize_rewards=False,
         record_trajectory=True,
+        locomotion_calibration_path=args.locomotion_calibration,
     )
     vec_path = _find_vec_normalize(args.checkpoint, args.vec_normalize)
     if vec_path is not None and vec_path.exists():

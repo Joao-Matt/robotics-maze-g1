@@ -20,6 +20,7 @@ def make_env_factory(
     training: bool,
     record_trajectory: bool = False,
     episode_plan: list[dict] | None = None,
+    locomotion_calibration_path: Path | None = None,
 ) -> Callable[[], G1MazeVelocityEnv]:
     """Return a picklable factory for one SB3 vector-env worker."""
 
@@ -34,6 +35,7 @@ def make_env_factory(
             training=training,
             record_trajectory=record_trajectory,
             episode_plan=episode_plan,
+            locomotion_calibration_path=locomotion_calibration_path,
         )
 
     return _factory
@@ -53,6 +55,7 @@ def build_vec_env(
     normalize_rewards: bool,
     record_trajectory: bool = False,
     episode_plan: list[dict] | None = None,
+    locomotion_calibration_path: Path | None = None,
 ):
     """Build a monitored SB3 vector environment."""
     from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor, VecNormalize
@@ -69,6 +72,7 @@ def build_vec_env(
             training=training,
             record_trajectory=record_trajectory,
             episode_plan=episode_plan,
+            locomotion_calibration_path=locomotion_calibration_path,
         )
         for index in range(num_envs)
     ]

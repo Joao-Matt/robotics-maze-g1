@@ -105,26 +105,42 @@ nav2_navigation:
   max_reverse_mps: -0.30
   max_yaw_rate_radps: 1.20
   min_yaw_rate_radps: 0.00
+  # Calibration measures the open-floor physical envelope. Nav2 uses a maze
+  # envelope derived from it so wall-proximal control stays smooth.
+  calibrated_nav2_forward_scale: 0.75
+  calibrated_nav2_yaw_rate_scale: 0.65
+  calibrated_nav2_max_forward_mps: 0.80
+  calibrated_nav2_max_yaw_rate_radps: 1.20
   turn_slowdown_start_radps: 0.45
   turn_slowdown_full_radps: 1.10
   turn_slowdown_min_forward_mps: 0.12
-  max_linear_accel_mps2: 4.00
-  max_linear_decel_mps2: 4.00
-  max_yaw_accel_radps2: 2.00
-  max_yaw_decel_radps2: 2.00
+  max_linear_accel_mps2: 2.00
+  max_linear_decel_mps2: 2.00
+  max_yaw_accel_radps2: 1.20
+  max_yaw_decel_radps2: 1.50
+  controller_frequency_hz: 10.0
+  dwb_sim_time_s: 1.0
+  dwb_vx_samples: 20
+  dwb_vtheta_samples: 40
+  dwb_linear_granularity_m: 0.05
+  dwb_angular_granularity_rad: 0.025
+  dwb_forward_point_distance_m: 0.60
   costmap_resolution_m: 0.05
   costmap_robot_radius_m: 0.45
   # Rendered per run as inflation_radius_m = cell_width_m * this fraction.
-  # The larger radius gives DWB a broad clearance gradient, so the corridor
-  # center is much cheaper than trajectories that skim the wall-inflation band.
-  inflation_radius_cell_width_fraction: 0.40
-  inflation_radius_m: 0.80
+  # Keep the inflated band narrow enough that the robot can recover near walls
+  # in 2-4 m maze corridors instead of treating most of the corridor as blocked.
+  inflation_radius_cell_width_fraction: 0.25
+  inflation_radius_m: 0.50
   inflation_cost_scaling: 0.35
-  obstacle_critic_scale: 18.00
-  path_align_scale: 10.0
+  # Prefer clearance over tiny path-length savings. Inflation stays at 25% of
+  # corridor width, so the local planner needs obstacle cost to dominate a
+  # shortest path that skims the inflated band.
+  obstacle_critic_scale: 32.00
+  path_align_scale: 6.0
   goal_align_scale: 8.0
-  path_dist_scale: 12.0
-  goal_dist_scale: 10.0
+  path_dist_scale: 8.0
+  goal_dist_scale: 6.0
   command_timeout_s: 1.20
   wall_contact_abort_s: 0.50
   stuck_timeout_s: 12.0

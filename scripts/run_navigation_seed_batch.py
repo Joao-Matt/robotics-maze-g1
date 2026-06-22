@@ -111,7 +111,7 @@ def main() -> int:
     parser.add_argument("--label", default="held_out")
     parser.add_argument("--seeds", nargs="*", default=[])
     parser.add_argument("--cell-size-m", type=float, default=2.0)
-    parser.add_argument("--duration", type=float, default=600.0)
+    parser.add_argument("--duration", type=float, default=float(os.environ.get("NAVIGATE_DURATION", "1200")))
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--base-ros-domain-id", type=int, default=40)

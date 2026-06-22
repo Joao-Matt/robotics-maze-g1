@@ -18,7 +18,7 @@ from sensor_msgs.msg import CameraInfo, Image, LaserScan
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
 
-from g1_nav_bringup.navigation_evaluation import frontier_clusters, frontier_goal, largest_connected_component, path_is_known_free
+from g1_nav_bringup.navigation_evaluation import frontier_clusters, frontier_goal, largest_connected_component, occupied_clearance_cells, path_is_known_free
 from sim.mujoco_runner import _write_png
 
 
@@ -28,7 +28,7 @@ TERMINAL={"TIMEOUT","STUCK","FALL_DETECTED","COLLISION_ABORT","COMMAND_TIMEOUT",
 class FrontierExplorer(Node):
     def __init__(self):
         super().__init__("frontier_explorer")
-        for name,default in (("output_dir","/workspace/runs"),("live_visual_dir",""),("duration_s",600.0),("frontier_setback_m",0.5),("sensor_timeout_s",3.0)):
+        for name,default in (("output_dir","/workspace/runs"),("live_visual_dir",""),("duration_s",1200.0),("frontier_setback_m",0.5),("sensor_timeout_s",3.0),("frontier_cluster_weight",1.0),("frontier_distance_weight",1.0),("frontier_clearance_weight",10.0),("frontier_clearance_radius_m",2.0)):
             self.declare_parameter(name,default)
         self.declare_parameter("raw_odometry_timeout_s",6.0)
         self.out=Path(str(self.get_parameter("output_dir").value)); self.out.mkdir(parents=True,exist_ok=True)
@@ -126,8 +126,18 @@ class FrontierExplorer(Node):
             x=self.map.info.origin.position.x+(cell[0]+.5)*resolution; y=self.map.info.origin.position.y+(cell[1]+.5)*resolution
             self.blacklist=[entry for entry in self.blacklist if time.monotonic()-entry[2]<30.0]
             if any(math.hypot(x-bx,y-by)<.75 for bx,by,_ in self.blacklist):continue
-            path_cost_estimate=math.hypot(x-current[0],y-current[1]); score=float(len(cluster))-path_cost_estimate
-            candidates.append((score,len(cluster),x,y))
+            path_cost_estimate=math.hypot(x-current[0],y-current[1])
+            clearance_cells=occupied_clearance_cells(
+                self.map.data,self.map.info.width,self.map.info.height,cell[0],cell[1],
+                max_cells=max(1,round(float(self.get_parameter("frontier_clearance_radius_m").value)/resolution)),
+            )
+            clearance_m=clearance_cells*resolution
+            score=(
+                float(self.get_parameter("frontier_cluster_weight").value)*float(len(cluster))
+                - float(self.get_parameter("frontier_distance_weight").value)*path_cost_estimate
+                + float(self.get_parameter("frontier_clearance_weight").value)*clearance_m
+            )
+            candidates.append((score,len(cluster),clearance_m,x,y))
         if not candidates:
             self.no_frontier_since=self.no_frontier_since or time.monotonic()
             if time.monotonic()-self.no_frontier_since>=20.0:self._finish("NO_REACHABLE_FRONTIER")
@@ -137,7 +147,7 @@ class FrontierExplorer(Node):
 
     def _preflight_next(self):
         if not self._candidate_queue:self.busy=False; return
-        score,size,x,y=self._candidate_queue.pop(0); self.busy=True; self.current_goal=(x,y); self.goal_kind="frontier"; self.current_score=score
+        score,size,clearance,x,y=self._candidate_queue.pop(0); self.busy=True; self.current_goal=(x,y); self.goal_kind="frontier"; self.current_score=score; self.current_clearance=clearance
         if not self.compute.wait_for_server(timeout_sec=.2):self.frontier_events.append({"goal":self.current_goal,"event":"rejected","reason":"planner_unavailable"}); self.busy=False; return
         goal=ComputePathToPose.Goal(); goal.goal=self._pose(x,y); goal.use_start=False
         self.compute.send_goal_async(goal).add_done_callback(lambda f:self._compute_accepted(f,size))
@@ -154,7 +164,7 @@ class FrontierExplorer(Node):
             info=source.info; safe=path_is_known_free(source.data,info.width,info.height,(info.origin.position.x,info.origin.position.y),info.resolution,points,max_cost=252 if self.costmap else 0)
         if not safe:self.frontier_events.append({"goal":self.current_goal,"event":"rejected","reason":"unsafe_or_unknown_path"}); self.blacklist.append((*self.current_goal,time.monotonic())); self.busy=False; return self._preflight_next()
         self.armed=True; self.arm_pub.publish(Bool(data=True)); self.frontier_goal_pub.publish(self._pose(*self.current_goal))
-        self.frontier_events.append({"time_s":self.get_clock().now().nanoseconds*1e-9,"goal":self.current_goal,"cluster_size":size,"score":self.current_score,"event":"accepted"})
+        self.frontier_events.append({"time_s":self.get_clock().now().nanoseconds*1e-9,"goal":self.current_goal,"cluster_size":size,"score":self.current_score,"clearance_m":getattr(self,"current_clearance",None),"event":"accepted"})
         self._send_navigation(*self.current_goal)
 
     def _send_navigation(self,x,y):

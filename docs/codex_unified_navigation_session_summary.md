@@ -8,7 +8,7 @@
 
 ## 1. One-paragraph executive summary
 
-Across these Codex sessions, the navigation stack was pushed from a D435i/depth/IMU-oriented Phase 6 concept toward a more instrumented Nav2 + SLAM + Lucky Walker exploration pipeline. The work added full ROS bag recording, structured run directories, command-vs-motion analysis, path-progress KPIs, safer Nav2 command limits, reverse motion, backup-based recovery, and a simulated Livox Mid-360 `/scan` source. The biggest engineering finding is that the main failure mode is no longer only “Nav2 cannot see the walls.” The system can publish scan data, build maps, generate commands, and move the humanoid, but the Lucky Walker policy has physical momentum, command dead zones, and body-envelope issues that still cause wall contacts. The next session should focus on fixing the active odometry/localization mode boundary, adding a stronger locomotion-level emergency brake, increasing footprint/body clearance conservatism, and validating with longer 600-second runs and multi-seed path-progress metrics.
+Across these Codex sessions, the navigation stack was pushed from a D435i/depth/IMU-oriented Phase 6 concept toward a more instrumented Nav2 + SLAM + Lucky Walker exploration pipeline. The work added full ROS bag recording, structured run directories, command-vs-motion analysis, path-progress KPIs, safer Nav2 command limits, reverse motion, backup-based recovery, and a simulated Livox Mid-360 `/scan` source. The biggest engineering finding is that the main failure mode is no longer only “Nav2 cannot see the walls.” The system can publish scan data, build maps, generate commands, and move the humanoid, but the Lucky Walker policy has physical momentum, command dead zones, and body-envelope issues that still cause wall contacts. The next session should focus on fixing the active odometry/localization mode boundary, adding a stronger locomotion-level emergency brake, increasing footprint/body clearance conservatism, and validating with longer 1200-second runs and multi-seed path-progress metrics.
 
 ---
 
@@ -528,7 +528,7 @@ This must be cleaned up in names, configs, dashboards, and README before present
 
 - The 40-second run had zero wall contacts but ended by timeout.
 - The Livox run mapped well but still collided around `26.46 s`.
-- Longer `600 s` runs are still needed.
+- Longer `1200 s` runs are still needed.
 
 ### 8.3 Collision is probably physical, not only perceptual
 
@@ -625,7 +625,7 @@ Try:
 After the brake and footprint changes:
 
 ```bash
-NAVIGATE_DURATION=600 make navigate-d435i SEED=123
+NAVIGATE_DURATION=1200 make navigate-d435i SEED=123
 ```
 
 Then inspect:
@@ -761,5 +761,5 @@ Separate ground-truth Livox demo mode from future non-ground-truth D435i/IMU odo
 What works now, and what still does not.
 
 ### Next actions
-Run longer 600-second single-seed test, then multi-seed path-progress evaluation.
+Run longer 1200-second single-seed test, then multi-seed path-progress evaluation.
 ```
