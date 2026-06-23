@@ -163,6 +163,7 @@ class NavigationCalibrationCompatibilityTest(unittest.TestCase):
                 "nav2_navigation": {
                     "locomotion_policy": "unitree_rl_gym_native",
                     "max_forward_mps": 1.5,
+                    "max_reverse_mps": -0.3,
                     "min_forward_mps": 0.1,
                     "max_yaw_rate_radps": 2.0,
                     "turn_slowdown_start_radps": 0.8,
@@ -216,6 +217,7 @@ class NavigationCalibrationCompatibilityTest(unittest.TestCase):
             self.assertEqual(resolved["nav2_navigation"]["max_forward_mps"], 0.8)
             self.assertEqual(resolved["nav2_navigation"]["max_yaw_rate_radps"], 0.7)
             self.assertEqual(follow["max_vel_x"], 0.8)
+            self.assertEqual(follow["min_vel_x"], -0.3)
             self.assertEqual(follow["max_vel_theta"], 0.7)
             self.assertNotIn("final_pose", rendered_text)
             self.assertNotIn("trajectory", rendered_text)

@@ -13,7 +13,7 @@ import numpy as np
 from gymnasium import spaces
 
 from maze.validator import raise_for_invalid, validate_maze
-from nav.controller import Pose2D, pose_from_base_state
+from nav.controller import Pose2D, pose_from_base_state, wrap_angle
 from nav.oracle_follow import ARC_TURN, build_turn_aware_path
 from nav.planner import plan_oracle_path
 from rl_velocity import ACTION_DIM, OBSERVATION_DIM
@@ -78,6 +78,8 @@ class G1MazeVelocityEnv(gym.Env):
         self.reward_weights = self.rl_config.get("rewards", {})
         self.termination = self.rl_config.get("termination", {})
         self.sensor_config = self.rl_config.get("sensors", {})
+        odometry_training = self.rl_config.get("odometry_training", {})
+        self.odometry_training = odometry_training if isinstance(odometry_training, dict) else {}
         self.action_rate_hz = float(self.rl_config.get("action_rate_hz", 10.0))
         self.action_dt = 1.0 / max(1e-6, self.action_rate_hz)
 
@@ -96,6 +98,7 @@ class G1MazeVelocityEnv(gym.Env):
         self.active_stage: StageSpec | None = None
         self.features: OraclePathFeatureExtractor | None = None
         self.projection: PathProjection | None = None
+        self.truth_projection: PathProjection | None = None
         self.previous_action = np.zeros(ACTION_DIM, dtype=np.float32)
         self.last_episode_metrics: EpisodeMetrics | None = None
         self.trajectory: list[dict[str, float | str | int]] = []
@@ -119,11 +122,13 @@ class G1MazeVelocityEnv(gym.Env):
         suite_index = int(planned.get("suite_index", self.episode_plan_index - 1 if planned else -1))
         self._load_episode_world(self.active_stage, episode_seed)
         self._reset_episode_bookkeeping(seed=episode_seed)
+        self._reset_odom_error()
         self.episode_id = episode_id
         self.suite_index = suite_index
         self.projection = self._project_pose()
-        self.previous_progress_m = self.projection.progress_m
-        self.best_progress_m = self.projection.progress_m
+        self.truth_projection = self._project_truth_pose()
+        self.previous_progress_m = self.truth_projection.progress_m
+        self.best_progress_m = self.truth_projection.progress_m
         self.last_progress_time_s = float(self.data.time)
         observation = self._build_observation()
         info = {
@@ -133,6 +138,7 @@ class G1MazeVelocityEnv(gym.Env):
             "suite_index": self.suite_index,
             "oracle_path_length_m": self.features.total_length_m,
             "command_limits": dict(self.command_limits),
+            "odometry_training": self._odometry_training_active(),
             "locomotion_calibration_path": str(self.locomotion_calibration_path) if self.locomotion_calibration_path else None,
         }
         return observation, info
@@ -148,30 +154,35 @@ class G1MazeVelocityEnv(gym.Env):
             ).astype(np.float32)
         command = self._action_to_command(normalized)
         previous_projection = self.projection or self._project_pose()
+        previous_truth_projection = self.truth_projection or self._project_truth_pose()
         previous_xy = self._xy()
         previous_time = float(self.data.time)
         self._simulate_command(command)
         state = base_state(self.data)
-        pose = pose_from_base_state(state)
-        projection = self.features.project(pose)
-        progress_delta = projection.progress_m - previous_projection.progress_m
-        self.projection = projection
-        self.max_segment_index_seen = max(self.max_segment_index_seen, projection.segment_index)
         now = float(self.data.time)
         self.episode_step_count += 1
         self.elapsed_s = now - self.episode_start_time_s
         distance_delta = math.hypot(self._xy()[0] - previous_xy[0], self._xy()[1] - previous_xy[1])
         dt = max(0.0, now - previous_time)
+        self._advance_odom_error(distance_delta=distance_delta)
+        projection = self._project_pose()
+        truth_projection = self._project_truth_pose()
+        progress_delta = truth_projection.progress_m - previous_truth_projection.progress_m
+        odom_progress_delta = projection.progress_m - previous_projection.progress_m
+        self.projection = projection
+        self.truth_projection = truth_projection
+        self.max_segment_index_seen = max(self.max_segment_index_seen, truth_projection.segment_index)
         self.distance_traveled_m += distance_delta
         self.max_speed_mps = max(self.max_speed_mps, self._ground_speed())
-        self._record_motion_sample(projection, distance_delta, dt)
+        self._record_motion_sample(truth_projection, distance_delta, dt)
         self._record_backward_sample(progress_delta, command, dt)
+        self._record_odom_error_sample()
         self.action_history.append((now, tuple(float(value) for value in normalized)))
-        self._update_turn_metrics(projection)
+        self._update_turn_metrics(truth_projection)
         self._update_stuck_watch(progress_delta, command, now)
 
         fallen = determine_status(command, state, self.sandbox_config) == "fallen"
-        success = self._success(projection)
+        success = self._success(truth_projection)
         timed_out = self.elapsed_s >= float(self.termination.get("max_episode_time_s", 120.0))
         stuck = self.stuck_timeout_exceeded
         collision_terminal = bool(self.termination.get("terminate_on_wall_contact", True)) and self.wall_contact_this_step
@@ -190,7 +201,7 @@ class G1MazeVelocityEnv(gym.Env):
 
         if fallen:
             self.fall_count += 1
-            if self._is_turn_projection(projection):
+            if self._is_turn_projection(truth_projection):
                 self.turn_fall_count += 1
             else:
                 self.straight_fall_count += 1
@@ -203,8 +214,13 @@ class G1MazeVelocityEnv(gym.Env):
             "seed": self.episode_seed,
             "episode_id": self.episode_id,
             "suite_index": self.suite_index,
-            "progress_m": projection.progress_m,
-            "distance_to_goal_m": projection.distance_to_goal_m,
+            "progress_m": truth_projection.progress_m,
+            "odom_progress_m": projection.progress_m,
+            "odom_progress_delta_m": odom_progress_delta,
+            "distance_to_goal_m": truth_projection.distance_to_goal_m,
+            "odom_distance_to_goal_m": projection.distance_to_goal_m,
+            "odom_position_error_m": self.current_odom_position_error_m,
+            "odom_yaw_error_rad": self.current_odom_yaw_error_rad,
             "wall_contact": self.wall_contact_this_step,
         }
         if self.record_trajectory:
@@ -268,7 +284,7 @@ class G1MazeVelocityEnv(gym.Env):
         if report.errors:
             raise RuntimeError("; ".join(report.errors))
         start_x, start_y = cell_to_world_xy(maze, maze.spec.start_cell)
-        start_yaw = turn_path.segments[0].target_heading_rad
+        start_yaw = turn_path.segments[0].target_heading_rad + float(stage.start_yaw_offset_rad)
         self._reset_policy_at_pose(start_x, start_y, start_yaw)
         self.mujoco.mj_forward(self.model, self.data)
         self.sandbox_config = config_from_dict(self.active_config)
@@ -326,6 +342,21 @@ class G1MazeVelocityEnv(gym.Env):
         self.action_history: list[tuple[float, tuple[float, float, float]]] = []
         self.trajectory = []
         self.last_episode_metrics = None
+        self.projection = None
+        self.truth_projection = None
+        self.odom_bias_x_m = 0.0
+        self.odom_bias_y_m = 0.0
+        self.odom_bias_yaw_rad = 0.0
+        self.odom_noise_x_m = 0.0
+        self.odom_noise_y_m = 0.0
+        self.odom_noise_yaw_rad = 0.0
+        self.current_odom_position_error_m = 0.0
+        self.current_odom_yaw_error_rad = 0.0
+        self.max_odom_position_error_m = 0.0
+        self.max_odom_yaw_error_rad = 0.0
+        self.odom_position_error_sum_m = 0.0
+        self.odom_yaw_error_sum_rad = 0.0
+        self.odom_error_samples = 0
 
     def _simulate_command(self, command: VelocityCommand) -> None:
         self.wall_contact_this_step = False
@@ -343,8 +374,7 @@ class G1MazeVelocityEnv(gym.Env):
     def _build_observation(self) -> np.ndarray:
         self._ensure_ready()
         state = base_state(self.data)
-        pose = pose_from_base_state(state)
-        projection = self.features.project(pose)
+        projection = self.projection or self._project_pose()
         rays = self._ray_distances()
         side_width = self._local_corridor_width(rays)
         body_vx, body_vy, yaw_rate = self._body_velocity()
@@ -407,9 +437,21 @@ class G1MazeVelocityEnv(gym.Env):
         truncated: bool,
     ) -> float:
         weights = self.reward_weights
-        reward = float(weights.get("progress", 8.0)) * progress_delta
+        progress_weight = float(weights.get("progress", 8.0))
+        progress_reward = progress_weight * progress_delta
+        reverse_allowed = command.vx < -0.03 and (
+            abs(projection.heading_error_rad) >= float(weights.get("reverse_heading_error_threshold_rad", 1.75))
+            or self.stuck_active_since is not None
+        )
+        if progress_delta < 0.0 and reverse_allowed:
+            progress_reward *= max(0.0, float(weights.get("reverse_backtrack_penalty_scale", 0.35)))
+        reward = progress_reward
         aligned_speed = max(0.0, progress_delta / max(self.action_dt, 1e-6)) * max(0.0, math.cos(projection.heading_error_rad))
         reward += float(weights.get("aligned_speed", 0.25)) * aligned_speed * self.action_dt
+        if command.vx < -0.03 and progress_delta > 0.0:
+            reward += float(weights.get("reverse_progress", 0.0)) * progress_delta
+        if command.vx < -0.03 and abs(projection.heading_error_rad) >= float(weights.get("reverse_heading_error_threshold_rad", 1.75)):
+            reward += float(weights.get("reverse_misaligned", 0.0)) * abs(command.vx) * self.action_dt
         tilt = max(0.0, abs(base_state(self.data)["roll"]) - 0.35) + max(0.0, abs(base_state(self.data)["pitch"]) - 0.35)
         reward -= float(weights.get("tilt", 0.35)) * tilt
         jerk = float(np.linalg.norm(action - self.previous_action))
@@ -432,10 +474,11 @@ class G1MazeVelocityEnv(gym.Env):
 
     def _episode_metrics(self, *, status: str, success: bool) -> EpisodeMetrics:
         elapsed = max(float(self.elapsed_s), 1e-6)
-        progress = self.projection.progress_m if self.projection is not None else 0.0
+        progress = self.truth_projection.progress_m if self.truth_projection is not None else 0.0
         efficiency = progress / max(self.distance_traveled_m, 1e-6)
         segment_counts = self._segment_counts(success=success)
         failure_phase = "" if success else ("turn" if self._is_turn_phase() else "straight")
+        odom_samples = max(1, int(self.odom_error_samples))
         return EpisodeMetrics(
             suite_index=int(self.suite_index),
             episode_id=str(self.episode_id),
@@ -477,6 +520,12 @@ class G1MazeVelocityEnv(gym.Env):
             backward_time_s=float(self.backward_time_s),
             reverse_command_steps=int(self.reverse_command_steps),
             reverse_command_time_s=float(self.reverse_command_time_s),
+            final_odom_position_error_m=float(self.current_odom_position_error_m),
+            mean_odom_position_error_m=float(self.odom_position_error_sum_m / odom_samples),
+            max_odom_position_error_m=float(self.max_odom_position_error_m),
+            final_odom_yaw_error_deg=float(math.degrees(self.current_odom_yaw_error_rad)),
+            mean_odom_yaw_error_deg=float(math.degrees(self.odom_yaw_error_sum_rad / odom_samples)),
+            max_odom_yaw_error_deg=float(math.degrees(self.max_odom_yaw_error_rad)),
             command_jerk=float(command_jerk(self.action_history)),
             corridor_width_m=float(self.active_stage.cell_size_m if self.active_stage else 0.0),
             friction=float(getattr(self, "sampled_friction", 0.0)),
@@ -539,11 +588,91 @@ class G1MazeVelocityEnv(gym.Env):
             self.reverse_command_steps += 1
             self.reverse_command_time_s += max(0.0, dt)
 
+    def _reset_odom_error(self) -> None:
+        if not self._odometry_training_active():
+            self.odom_bias_x_m = 0.0
+            self.odom_bias_y_m = 0.0
+            self.odom_bias_yaw_rad = 0.0
+            self._sample_odom_noise(enabled=False)
+            self._record_odom_error_sample()
+            return
+        initial_xy = float(self.odometry_training.get("initial_xy_bias_std_m", 0.0))
+        initial_yaw = float(self.odometry_training.get("initial_yaw_bias_std_rad", 0.0))
+        self.odom_bias_x_m = float(self.rng.normal(0.0, max(0.0, initial_xy)))
+        self.odom_bias_y_m = float(self.rng.normal(0.0, max(0.0, initial_xy)))
+        self.odom_bias_yaw_rad = float(self.rng.normal(0.0, max(0.0, initial_yaw)))
+        self._clip_odom_bias()
+        self._sample_odom_noise(enabled=True)
+        self._record_odom_error_sample()
+
+    def _advance_odom_error(self, *, distance_delta: float) -> None:
+        enabled = self._odometry_training_active()
+        if not enabled:
+            self.odom_bias_x_m = 0.0
+            self.odom_bias_y_m = 0.0
+            self.odom_bias_yaw_rad = 0.0
+            self._sample_odom_noise(enabled=False)
+            return
+        distance = max(0.0, float(distance_delta))
+        distance_scale = math.sqrt(distance)
+        xy_drift_std = max(0.0, float(self.odometry_training.get("xy_drift_std_per_m", 0.0))) * distance_scale
+        yaw_drift_std = max(0.0, float(self.odometry_training.get("yaw_drift_std_per_m", 0.0))) * distance_scale
+        if xy_drift_std > 0.0:
+            self.odom_bias_x_m += float(self.rng.normal(0.0, xy_drift_std))
+            self.odom_bias_y_m += float(self.rng.normal(0.0, xy_drift_std))
+        if yaw_drift_std > 0.0:
+            self.odom_bias_yaw_rad = wrap_angle(self.odom_bias_yaw_rad + float(self.rng.normal(0.0, yaw_drift_std)))
+        self._clip_odom_bias()
+        self._sample_odom_noise(enabled=True)
+
+    def _sample_odom_noise(self, *, enabled: bool) -> None:
+        if not enabled:
+            self.odom_noise_x_m = 0.0
+            self.odom_noise_y_m = 0.0
+            self.odom_noise_yaw_rad = 0.0
+            return
+        xy_noise = max(0.0, float(self.odometry_training.get("xy_noise_std_m", 0.0)))
+        yaw_noise = max(0.0, float(self.odometry_training.get("yaw_noise_std_rad", 0.0)))
+        self.odom_noise_x_m = float(self.rng.normal(0.0, xy_noise)) if xy_noise > 0.0 else 0.0
+        self.odom_noise_y_m = float(self.rng.normal(0.0, xy_noise)) if xy_noise > 0.0 else 0.0
+        self.odom_noise_yaw_rad = float(self.rng.normal(0.0, yaw_noise)) if yaw_noise > 0.0 else 0.0
+
+    def _clip_odom_bias(self) -> None:
+        max_xy = max(0.0, float(self.odometry_training.get("max_xy_bias_m", 0.0)))
+        if max_xy > 0.0:
+            norm = math.hypot(self.odom_bias_x_m, self.odom_bias_y_m)
+            if norm > max_xy:
+                scale = max_xy / max(norm, 1e-9)
+                self.odom_bias_x_m *= scale
+                self.odom_bias_y_m *= scale
+        max_yaw = max(0.0, float(self.odometry_training.get("max_yaw_bias_rad", 0.0)))
+        if max_yaw > 0.0:
+            self.odom_bias_yaw_rad = _clip(wrap_angle(self.odom_bias_yaw_rad), -max_yaw, max_yaw)
+
+    def _record_odom_error_sample(self) -> None:
+        truth = self._truth_pose()
+        odom = self._odom_pose_from_truth(truth)
+        position_error = math.hypot(odom.x - truth.x, odom.y - truth.y)
+        yaw_error = abs(wrap_angle(odom.yaw - truth.yaw))
+        self.current_odom_position_error_m = position_error
+        self.current_odom_yaw_error_rad = yaw_error
+        self.max_odom_position_error_m = max(self.max_odom_position_error_m, position_error)
+        self.max_odom_yaw_error_rad = max(self.max_odom_yaw_error_rad, yaw_error)
+        self.odom_position_error_sum_m += position_error
+        self.odom_yaw_error_sum_rad += yaw_error
+        self.odom_error_samples += 1
+
+    def _odometry_training_active(self) -> bool:
+        if not bool(self.odometry_training.get("enabled", False)):
+            return False
+        return self.training or bool(self.odometry_training.get("apply_in_evaluation", False))
+
     def _update_stuck_watch(self, progress_delta: float, command: VelocityCommand, now: float) -> None:
         min_progress = float(self.termination.get("stuck_min_progress_m", 0.02))
         commanded = abs(command.vx) > 0.03 or abs(command.vy) > 0.03 or abs(command.yaw_rate) > 0.05
         if progress_delta > min_progress:
-            self.best_progress_m = max(self.best_progress_m, self.projection.progress_m)
+            progress_m = self.truth_projection.progress_m if self.truth_projection is not None else self.best_progress_m
+            self.best_progress_m = max(self.best_progress_m, progress_m)
             self.last_progress_time_s = now
             if self.stuck_active_since is not None:
                 self.stuck_recovery_time_s += now - self.stuck_active_since
@@ -588,8 +717,21 @@ class G1MazeVelocityEnv(gym.Env):
     def _project_pose(self) -> PathProjection:
         return self.features.project(self._pose())
 
+    def _project_truth_pose(self) -> PathProjection:
+        return self.features.project(self._truth_pose())
+
     def _pose(self) -> Pose2D:
+        return self._odom_pose_from_truth(self._truth_pose())
+
+    def _truth_pose(self) -> Pose2D:
         return pose_from_base_state(base_state(self.data))
+
+    def _odom_pose_from_truth(self, pose: Pose2D) -> Pose2D:
+        return Pose2D(
+            x=pose.x + self.odom_bias_x_m + self.odom_noise_x_m,
+            y=pose.y + self.odom_bias_y_m + self.odom_noise_y_m,
+            yaw=wrap_angle(pose.yaw + self.odom_bias_yaw_rad + self.odom_noise_yaw_rad),
+        )
 
     def _xy(self) -> tuple[float, float]:
         return float(self.data.qpos[0]), float(self.data.qpos[1])
@@ -618,8 +760,8 @@ class G1MazeVelocityEnv(gym.Env):
         completed_straight = sum(1 for segment in segments if segment.index in completed_indices and segment.state != ARC_TURN)
         failed_turn = 0
         failed_straight = 0
-        if not success and self.projection is not None:
-            if self.projection.segment.state == ARC_TURN:
+        if not success and self.truth_projection is not None:
+            if self.truth_projection.segment.state == ARC_TURN:
                 failed_turn = 1
             else:
                 failed_straight = 1
@@ -633,12 +775,12 @@ class G1MazeVelocityEnv(gym.Env):
         }
 
     def _is_turn_phase(self) -> bool:
-        return self.projection is not None and self._is_turn_projection(self.projection)
+        return self.truth_projection is not None and self._is_turn_projection(self.truth_projection)
 
     def _is_current_pose_turn_phase(self) -> bool:
         if self.features is None or self.data is None:
             return self._is_turn_phase()
-        return self._is_turn_projection(self._project_pose())
+        return self._is_turn_projection(self._project_truth_pose())
 
     @staticmethod
     def _is_turn_projection(projection: PathProjection) -> bool:
@@ -655,19 +797,28 @@ class G1MazeVelocityEnv(gym.Env):
 
     def _record_trajectory_row(self, status: str, command: VelocityCommand, reward: float) -> None:
         state = base_state(self.data)
+        truth_pose = self._truth_pose()
+        odom_pose = self._odom_pose_from_truth(truth_pose)
         self.trajectory.append(
             {
                 "time_s": float(self.elapsed_s),
                 "x": float(state["base_x"]),
                 "y": float(state["base_y"]),
                 "yaw": float(state["yaw"]),
+                "odom_x": float(odom_pose.x),
+                "odom_y": float(odom_pose.y),
+                "odom_yaw": float(odom_pose.yaw),
+                "odom_position_error_m": float(self.current_odom_position_error_m),
+                "odom_yaw_error_rad": float(self.current_odom_yaw_error_rad),
                 "vx": float(command.vx),
                 "vy": float(command.vy),
                 "yaw_rate": float(command.yaw_rate),
-                "progress_m": float(self.projection.progress_m if self.projection else 0.0),
+                "progress_m": float(self.truth_projection.progress_m if self.truth_projection else 0.0),
+                "odom_progress_m": float(self.projection.progress_m if self.projection else 0.0),
                 "reward": float(reward),
                 "status": status,
-                "segment_index": int(self.projection.segment_index if self.projection else 0),
+                "segment_index": int(self.truth_projection.segment_index if self.truth_projection else 0),
+                "odom_segment_index": int(self.projection.segment_index if self.projection else 0),
             }
         )
 
@@ -678,6 +829,10 @@ class G1MazeVelocityEnv(gym.Env):
 
 def _scale(value: float, low: float, high: float) -> float:
     return low + (float(value) + 1.0) * 0.5 * (high - low)
+
+
+def _clip(value: float, low: float, high: float) -> float:
+    return max(float(low), min(float(high), float(value)))
 
 
 def load_locomotion_calibration(path: Path) -> dict[str, Any]:

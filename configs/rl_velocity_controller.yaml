@@ -21,10 +21,27 @@ rl_velocity_controller:
     stuck_timeout_s: 6.0
     stuck_min_progress_m: 0.02
     spin_yaw_rate_radps: 0.75
+    backward_progress_threshold_m: 0.03
+
+  odometry_training:
+    enabled: true
+    apply_in_evaluation: false
+    xy_noise_std_m: 0.025
+    yaw_noise_std_rad: 0.025
+    xy_drift_std_per_m: 0.015
+    yaw_drift_std_per_m: 0.010
+    initial_xy_bias_std_m: 0.015
+    initial_yaw_bias_std_rad: 0.015
+    max_xy_bias_m: 0.25
+    max_yaw_bias_rad: 0.25
 
   rewards:
     progress: 8.0
     aligned_speed: 0.25
+    reverse_progress: 1.5
+    reverse_misaligned: 0.04
+    reverse_backtrack_penalty_scale: 0.35
+    reverse_heading_error_threshold_rad: 1.75
     goal_bonus: 60.0
     collision: 40.0
     wall_contact: 8.0
@@ -65,17 +82,43 @@ rl_velocity_controller:
         cell_size_m: 2.0
         weight: 1.0
       - name: one_90_turn
-        kind: one_90_turn
+        kind: one_90_turn_right
+        width_cells: 9
+        height_cells: 9
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: one_90_turn_left
+        kind: one_90_turn_left
         width_cells: 9
         height_cells: 9
         cell_size_m: 2.0
         weight: 1.0
       - name: s_turns
-        kind: s_turns
+        kind: s_turns_right_first
         width_cells: 13
         height_cells: 9
         cell_size_m: 2.0
         weight: 1.0
+      - name: s_turns_left_first
+        kind: s_turns_left_first
+        width_cells: 13
+        height_cells: 9
+        cell_size_m: 2.0
+        weight: 1.0
+      - name: reverse_recovery_left
+        kind: straight_corridor
+        width_cells: 13
+        height_cells: 5
+        cell_size_m: 2.0
+        weight: 0.7
+        start_yaw_offset_rad: -2.80
+      - name: reverse_recovery_right
+        kind: straight_corridor
+        width_cells: 13
+        height_cells: 5
+        cell_size_m: 2.0
+        weight: 0.7
+        start_yaw_offset_rad: 2.80
       - name: t_junctions
         kind: t_junctions
         width_cells: 13

@@ -1,0 +1,200 @@
+schema_version: 1
+schema_name: navigation_capture_v1
+description: Crash-tolerant navigation dataset capture contract for G1 maze runs.
+storage:
+  default_backend: sqlite3
+  split_size_bytes: 536870912
+timestamp_semantics:
+  primary_sample_time: rosbag message timestamp in nanoseconds.
+  header_time: msg.header.stamp in nanoseconds when the ROS message type has a header.
+  clock_reference: /clock carries simulation time for replay and alignment.
+  missing_header_time: Empty for headerless messages or messages that cannot be deserialized during repair.
+ground_truth_policy:
+  allowed_usage: evaluation_and_comparison_only
+  forbidden_usage: navigation_or_planning_input
+groups:
+  - name: rgbd
+    min_present: 4
+    topics:
+      - /camera/color/image_raw
+      - /camera/color/camera_info
+      - /camera/depth/image_rect_raw
+      - /camera/depth/camera_info
+  - name: planned_path
+    min_present: 1
+    topics:
+      - /plan
+      - /received_global_plan
+      - /local_plan
+topics:
+  - name: /camera/color/image_raw
+    type: sensor_msgs/msg/Image
+    category: rgbd
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 3.0
+    timestamp_policy: bag_time_primary_header_stamp_sensor_time
+  - name: /camera/color/camera_info
+    type: sensor_msgs/msg/CameraInfo
+    category: rgbd
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 3.0
+    timestamp_policy: bag_time_primary_header_stamp_sensor_time
+  - name: /camera/depth/image_rect_raw
+    type: sensor_msgs/msg/Image
+    category: rgbd
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 3.0
+    timestamp_policy: bag_time_primary_header_stamp_sensor_time
+  - name: /camera/depth/camera_info
+    type: sensor_msgs/msg/CameraInfo
+    category: rgbd
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 3.0
+    timestamp_policy: bag_time_primary_header_stamp_sensor_time
+  - name: /imu/data
+    type: sensor_msgs/msg/Imu
+    category: imu
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_header_stamp_sensor_time
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    category: robot_state
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_header_stamp_state_time
+  - name: /odom
+    type: nav_msgs/msg/Odometry
+    category: base_odometry
+    producer: d435i_scan_odometry
+    required: true
+    expected_rate_hz: 10.0
+    timestamp_policy: bag_time_primary_header_stamp_odometry_time
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    category: transforms
+    producer: tf_publishers
+    required: true
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_transform_header_stamps_per_transform
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    category: transforms
+    producer: tf_publishers
+    required: true
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_transform_header_stamps_per_transform
+  - name: /plan
+    type: nav_msgs/msg/Path
+    category: planned_path
+    producer: nav2_or_reporter
+    required: false
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_header_stamp_plan_time
+  - name: /received_global_plan
+    type: nav_msgs/msg/Path
+    category: planned_path
+    producer: nav2_controller
+    required: false
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_header_stamp_plan_time
+  - name: /local_plan
+    type: nav_msgs/msg/Path
+    category: planned_path
+    producer: nav2_controller
+    required: false
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_header_stamp_plan_time
+  - name: /map
+    type: nav_msgs/msg/OccupancyGrid
+    category: mapping
+    producer: slam_toolbox
+    required: true
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_header_stamp_map_time
+  - name: /map_metadata
+    type: nav_msgs/msg/MapMetaData
+    category: mapping
+    producer: slam_toolbox
+    required: true
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_map_load_time
+  - name: /map_updates
+    type: map_msgs/msg/OccupancyGridUpdate
+    category: mapping
+    producer: slam_toolbox_or_map_server
+    required: false
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_header_stamp_update_time
+  - name: /ground_truth/odom
+    type: nav_msgs/msg/Odometry
+    category: ground_truth
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_header_stamp_truth_time
+    evaluation_only: true
+  - name: /ground_truth/achieved_velocity
+    type: geometry_msgs/msg/TwistStamped
+    category: ground_truth
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_header_stamp_truth_time
+    evaluation_only: true
+  - name: /ground_truth/trajectory
+    type: nav_msgs/msg/Path
+    category: ground_truth
+    producer: exploration_reporter
+    required: false
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_header_stamp_truth_time
+    evaluation_only: true
+  - name: /clock
+    type: rosgraph_msgs/msg/Clock
+    category: timing
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_clock_msg_sim_time
+  - name: /cmd_vel
+    type: geometry_msgs/msg/Twist
+    category: control
+    producer: nav2_controller
+    required: true
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_headerless_command_time
+  - name: /applied_cmd_vel
+    type: geometry_msgs/msg/TwistStamped
+    category: control
+    producer: g1_mujoco_bridge
+    required: true
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_header_stamp_applied_command_time
+  - name: /navigation/status
+    type: std_msgs/msg/String
+    category: status
+    producer: g1_mujoco_bridge
+    required: false
+    expected_rate_hz: 50.0
+    timestamp_policy: bag_time_primary_headerless_status_time
+  - name: /exploration/status
+    type: std_msgs/msg/String
+    category: status
+    producer: maze_fallback_goal_or_explorer
+    required: false
+    expected_rate_hz: null
+    timestamp_policy: bag_time_primary_headerless_status_time
+  - name: /odometry/d435i_status
+    type: std_msgs/msg/String
+    category: status
+    producer: d435i_scan_odometry
+    required: false
+    expected_rate_hz: 10.0
+    timestamp_policy: bag_time_primary_headerless_status_time

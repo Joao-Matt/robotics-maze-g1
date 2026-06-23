@@ -28,6 +28,7 @@ class StageSpec:
     scan_noise_std_m: float = 0.0
     action_noise_std: float = 0.0
     friction_range: tuple[float, float] = (0.8, 0.8)
+    start_yaw_offset_rad: float = 0.0
 
 
 def load_stage_specs(rl_config: dict[str, Any]) -> list[StageSpec]:
@@ -51,6 +52,7 @@ def load_stage_specs(rl_config: dict[str, Any]) -> list[StageSpec]:
                 scan_noise_std_m=float(raw.get("scan_noise_std_m", 0.0)),
                 action_noise_std=float(raw.get("action_noise_std", 0.0)),
                 friction_range=(float(friction[0]), float(friction[1])),
+                start_yaw_offset_rad=float(raw.get("start_yaw_offset_rad", 0.0)),
             )
         )
     return stages
@@ -88,10 +90,14 @@ def maze_for_stage(stage: StageSpec, seed: int) -> Maze:
         return generate_maze_from_spec(_spec(stage, seed, (1, 1), (stage.height_cells - 2, stage.width_cells - 2)))
     if stage.kind == "straight_corridor":
         return _straight_corridor(stage, seed)
-    if stage.kind == "one_90_turn":
-        return _one_turn(stage, seed)
-    if stage.kind == "s_turns":
-        return _s_turns(stage, seed)
+    if stage.kind in {"one_90_turn", "one_90_turn_right"}:
+        return _one_turn(stage, seed, turn_direction="right")
+    if stage.kind == "one_90_turn_left":
+        return _one_turn(stage, seed, turn_direction="left")
+    if stage.kind in {"s_turns", "s_turns_right_first"}:
+        return _s_turns(stage, seed, first_turn="right")
+    if stage.kind == "s_turns_left_first":
+        return _s_turns(stage, seed, first_turn="left")
     if stage.kind == "t_junctions":
         return _t_junctions(stage, seed)
     raise ValueError(f"Unsupported curriculum stage kind: {stage.kind}")
@@ -106,38 +112,44 @@ def _straight_corridor(stage: StageSpec, seed: int) -> Maze:
     return Maze(spec=_spec(stage, seed, start, goal), grid=grid)
 
 
-def _one_turn(stage: StageSpec, seed: int) -> Maze:
-    start = (1, 1)
-    corner = (1, stage.width_cells - 2)
-    goal = (stage.height_cells - 2, stage.width_cells - 2)
+def _one_turn(stage: StageSpec, seed: int, *, turn_direction: str) -> Maze:
+    if turn_direction == "left":
+        start = (stage.height_cells - 2, 1)
+        corner = (stage.height_cells - 2, stage.width_cells - 2)
+        goal = (1, stage.width_cells - 2)
+    else:
+        start = (1, 1)
+        corner = (1, stage.width_cells - 2)
+        goal = (stage.height_cells - 2, stage.width_cells - 2)
     grid = _wall_grid(stage)
     _carve_polyline(grid, [start, corner, goal])
     return Maze(spec=_spec(stage, seed, start, goal), grid=grid)
 
 
-def _s_turns(stage: StageSpec, seed: int) -> Maze:
+def _s_turns(stage: StageSpec, seed: int, *, first_turn: str) -> Maze:
     height = max(9, stage.height_cells)
     width = max(9, stage.width_cells)
-    stage = StageSpec(
-        name=stage.name,
-        kind=stage.kind,
-        width_cells=_odd(width),
-        height_cells=_odd(height),
-        cell_size_m=stage.cell_size_m,
-        weight=stage.weight,
-        scan_noise_std_m=stage.scan_noise_std_m,
-        action_noise_std=stage.action_noise_std,
-        friction_range=stage.friction_range,
-    )
-    start = (1, 1)
-    points = [
-        start,
-        (1, stage.width_cells - 2),
-        (3, stage.width_cells - 2),
-        (3, 1),
-        (stage.height_cells - 2, 1),
-        (stage.height_cells - 2, stage.width_cells - 2),
-    ]
+    stage = _resized_stage(stage, width_cells=width, height_cells=height)
+    if first_turn == "left":
+        start = (stage.height_cells - 2, 1)
+        points = [
+            start,
+            (stage.height_cells - 2, stage.width_cells - 2),
+            (stage.height_cells - 4, stage.width_cells - 2),
+            (stage.height_cells - 4, 1),
+            (1, 1),
+            (1, stage.width_cells - 2),
+        ]
+    else:
+        start = (1, 1)
+        points = [
+            start,
+            (1, stage.width_cells - 2),
+            (3, stage.width_cells - 2),
+            (3, 1),
+            (stage.height_cells - 2, 1),
+            (stage.height_cells - 2, stage.width_cells - 2),
+        ]
     grid = _wall_grid(stage)
     _carve_polyline(grid, points)
     return Maze(spec=_spec(stage, seed, start, points[-1]), grid=grid)
@@ -146,17 +158,7 @@ def _s_turns(stage: StageSpec, seed: int) -> Maze:
 def _t_junctions(stage: StageSpec, seed: int) -> Maze:
     height = max(9, stage.height_cells)
     width = max(9, stage.width_cells)
-    stage = StageSpec(
-        name=stage.name,
-        kind=stage.kind,
-        width_cells=_odd(width),
-        height_cells=_odd(height),
-        cell_size_m=stage.cell_size_m,
-        weight=stage.weight,
-        scan_noise_std_m=stage.scan_noise_std_m,
-        action_noise_std=stage.action_noise_std,
-        friction_range=stage.friction_range,
-    )
+    stage = _resized_stage(stage, width_cells=width, height_cells=height)
     mid_row = stage.height_cells // 2
     mid_col = stage.width_cells // 2
     start = (stage.height_cells - 2, 1)
@@ -209,7 +211,21 @@ def _carve_line(grid: np.ndarray, start: Cell, end: Cell) -> None:
     grid[target_row, target_col] = FREE
 
 
+def _resized_stage(stage: StageSpec, *, width_cells: int, height_cells: int) -> StageSpec:
+    return StageSpec(
+        name=stage.name,
+        kind=stage.kind,
+        width_cells=_odd(width_cells),
+        height_cells=_odd(height_cells),
+        cell_size_m=stage.cell_size_m,
+        weight=stage.weight,
+        scan_noise_std_m=stage.scan_noise_std_m,
+        action_noise_std=stage.action_noise_std,
+        friction_range=stage.friction_range,
+        start_yaw_offset_rad=stage.start_yaw_offset_rad,
+    )
+
+
 def _odd(value: Any) -> int:
     result = max(5, int(value))
     return result if result % 2 == 1 else result + 1
-

@@ -38,6 +38,14 @@ NAVIGATE_WITH_MUJOCO ?= false
 NAVIGATE_DASHBOARD ?= true
 DASHBOARD_AUTO_OPEN ?= true
 NAVIGATE_LAUNCH_ARGS ?=
+NAVIGATE_COMMAND ?= navigate
+NAVIGATE_CAPTURE_SCHEMA ?=
+NAVIGATE_CAPTURE_LAUNCH_ARGS ?=
+NAV_RECORD_SCHEMA ?= configs/navigation_capture_topics.yaml
+NAV_RECORD_SPLIT_BYTES ?= 536870912
+NAV_RECORD_STORAGE ?= sqlite3
+NAV_RECORD_RGBD_RATE_HZ ?= 3.0
+RUN_DIR ?=
 ODOM_TUNE_RUN_ROOT ?= runs/odom_tuning
 ODOM_TUNE_DURATION ?= 240
 ODOM_TUNE_SEEDS ?= 123 81
@@ -85,7 +93,7 @@ export REQUIRED_STORAGE_MOUNT
 export EXPECTED_STORAGE_UUID
 
 .PHONY: help storage-check setup install-torch-cpu install-rl-deps docker-build docker-run docker-run-gui docker-check-ros docker-build-multiarch
-.PHONY: fetch-unitree-rl-gym-policy fetch-m-explore prebuild prebuild-inner maze world oracle oracle-view oracle-calibrated oracle-calibrated-view oracle-inner slam slam-view slam-inner navigate navigate-view navigate-full-view demo navigate-inner heldout-navigate heldout-report bag-info clean
+.PHONY: fetch-unitree-rl-gym-policy fetch-m-explore prebuild prebuild-inner maze world oracle oracle-view oracle-calibrated oracle-calibrated-view oracle-inner slam slam-view slam-inner navigate navigate-record navigate-view navigate-full-view demo navigate-inner heldout-navigate heldout-report bag-info repair-run clean
 .PHONY: odom-tune locomotion-calibrate locomotion-calibrate-smoke locomotion-calibrate-batch locomotion-calibrate-batch-smoke rl-train rl-eval rl-eval-corridor-sweep rl-replay
 
 help:
@@ -103,6 +111,7 @@ help:
 			'  make slam SEED=123                   # oracle-driven SLAM with rosbag' \
 			'  make slam-view SEED=123              # SLAM with RViz' \
 			'  make navigate SEED=123               # SLAM + m-explore + Nav2 + rosbag' \
+			'  make navigate-record SEED=123        # dataset capture: RGB-D + schema allowlist + split rosbag' \
 			'  make navigate LOCOMOTION_CALIBRATION=... # Nav2 uses calibrated cmd_vel envelope' \
 		'  make odom-tune                       # sweep scan-odom params against offline ground-truth metrics' \
 		'  make locomotion-calibrate            # direct MuJoCo G1 walking policy command sweep' \
@@ -117,7 +126,8 @@ help:
 		'  make rl-eval-corridor-sweep CHECKPOINT=... # 100 random mazes across 2-4 m corridors' \
 		'  make rl-replay CHECKPOINT=... SEED=123 # replay one trained PPO episode' \
 		'  make heldout-navigate                # run the fixed 20-seed headless held-out batch' \
-		'  make heldout-report                  # aggregate held-out solve rate with 95% CI'
+		'  make heldout-report                  # aggregate held-out solve rate with 95% CI' \
+		'  make repair-run RUN_DIR=runs/navigate-record/... # reindex/validate a crashed dataset run'
 
 storage-check:
 	scripts/check_storage_layout.sh
@@ -265,6 +275,13 @@ navigate: storage-check
 			DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)" LOCOMOTION_CALIBRATION="$(LOCOMOTION_CALIBRATION)" NAV2_LIMIT_MODE="$(NAV2_LIMIT_MODE)"; \
 		fi
 
+navigate-record: storage-check
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+			$(MAKE) navigate-inner NAVIGATE_COMMAND=navigate-record NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)" NAVIGATE_CAPTURE_SCHEMA="$(NAV_RECORD_SCHEMA)" NAVIGATE_CAPTURE_LAUNCH_ARGS="camera_enabled:=true camera_rate_hz:=$(NAV_RECORD_RGBD_RATE_HZ) depth_only:=false" NAV_RECORD_STORAGE="$(NAV_RECORD_STORAGE)" NAV_RECORD_SPLIT_BYTES="$(NAV_RECORD_SPLIT_BYTES)" NAV_RECORD_RGBD_RATE_HZ="$(NAV_RECORD_RGBD_RATE_HZ)" LOCOMOTION_CALIBRATION="$(LOCOMOTION_CALIBRATION)" NAV2_LIMIT_MODE="$(NAV2_LIMIT_MODE)"; \
+		else \
+			DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh make navigate-inner NAVIGATE_COMMAND=navigate-record NAVIGATE_WITH_RVIZ=false NAVIGATE_WITH_MUJOCO=false SEED="$(SEED)" CELL_SIZE_M="$(CELL_SIZE_M)" NAVIGATE_DURATION="$(NAVIGATE_DURATION)" CONFIG="$(CONFIG)" RUN_ROOT="$(RUN_ROOT)" NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)" NAVIGATE_CAPTURE_SCHEMA="$(NAV_RECORD_SCHEMA)" NAVIGATE_CAPTURE_LAUNCH_ARGS="camera_enabled:=true camera_rate_hz:=$(NAV_RECORD_RGBD_RATE_HZ) depth_only:=false" NAV_RECORD_STORAGE="$(NAV_RECORD_STORAGE)" NAV_RECORD_SPLIT_BYTES="$(NAV_RECORD_SPLIT_BYTES)" NAV_RECORD_RGBD_RATE_HZ="$(NAV_RECORD_RGBD_RATE_HZ)" LOCOMOTION_CALIBRATION="$(LOCOMOTION_CALIBRATION)" NAV2_LIMIT_MODE="$(NAV2_LIMIT_MODE)"; \
+		fi
+
 navigate-view: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
 			$(MAKE) navigate-inner NAVIGATE_WITH_RVIZ=true NAVIGATE_WITH_MUJOCO=false NAVIGATE_SKIP_BUILD="$(NAVIGATE_SKIP_BUILD)" NAVIGATE_DASHBOARD="$(NAVIGATE_DASHBOARD)" DASHBOARD_PORT="$(DASHBOARD_PORT)" DASHBOARD_AUTO_OPEN="$(DASHBOARD_AUTO_OPEN)" NAVIGATE_LAUNCH_ARGS="$(NAVIGATE_LAUNCH_ARGS)" LOCOMOTION_CALIBRATION="$(LOCOMOTION_CALIBRATION)" NAV2_LIMIT_MODE="$(NAV2_LIMIT_MODE)"; \
@@ -284,7 +301,7 @@ demo: storage-check
 
 navigate-inner: storage-check
 	@test "$${ROS_DISTRO:-}" = "humble" || (echo "navigate-inner requires ROS 2 Humble" && exit 1)
-	@run_dir=$$(python3 scripts/create_run_context.py --command navigate --seed "$(SEED)" --root "$(RUN_ROOT)" --config "$(CONFIG)" --parameter cell_size="$(CELL_SIZE_M)m" --parameter duration="$(NAVIGATE_DURATION)s"); \
+	@run_dir=$$(python3 scripts/create_run_context.py --command "$(NAVIGATE_COMMAND)" --seed "$(SEED)" --root "$(RUN_ROOT)" --config "$(CONFIG)" --parameter cell_size="$(CELL_SIZE_M)m" --parameter duration="$(NAVIGATE_DURATION)s"); \
 	echo "Run directory: $$run_dir"; \
 	if [ "$(NAVIGATE_DASHBOARD)" = "true" ]; then echo "Live KPI dashboard requested; the URL prints after the monitor HTTP server binds."; fi; \
 	if [ "$(NAVIGATE_SKIP_BUILD)" = "true" ]; then echo "Skipping prebuild; using existing ros_ws/install."; elif [ "$(NAVIGATE_SKIP_BUILD)" = "auto" ] && ! ROS_PREBUILD_CHECK_SOURCES=false bash scripts/ros_prebuild_needed.sh "$(ROS_PREBUILD_STAMP)"; then echo "ROS workspace install is present; skipping prebuild."; else $(MAKE) prebuild-inner; fi; \
@@ -294,12 +311,21 @@ navigate-inner: storage-check
 	torch_dir=$$(dirname "$$(ls "$(VENV)"/lib/python*/site-packages/torch/lib/libgomp.so.1 2>/dev/null | head -1)"); \
 	torch_preload=""; if [ -f "$$torch_dir/libgomp.so.1" ] && [ -f "$$torch_dir/libc10.so" ]; then torch_preload="$$torch_dir/libgomp.so.1:$$torch_dir/libc10.so"; fi; \
 	bag_path="$(abspath .)/$$run_dir/rosbag"; bag_log="$(abspath .)/$$run_dir/rosbag-record.log"; \
-	echo "Recording all ROS topics: $$bag_path"; \
-	ros2 bag record --all --include-hidden-topics --output "$$bag_path" >"$$bag_log" 2>&1 & bag_pid=$$!; \
+	if [ -n "$(NAVIGATE_CAPTURE_SCHEMA)" ]; then \
+		schema_path="$(abspath $(NAVIGATE_CAPTURE_SCHEMA))"; \
+		PYTHONPATH="$(CURDIR):$$PYTHONPATH" python3 scripts/navigation_capture_artifacts.py prepare --run-dir "$$run_dir" --schema "$$schema_path" --bag-path "$$bag_path" --storage "$(NAV_RECORD_STORAGE)" --split-size-bytes "$(NAV_RECORD_SPLIT_BYTES)" --rgbd-rate-hz "$(NAV_RECORD_RGBD_RATE_HZ)"; \
+		capture_topics=$$(PYTHONPATH="$(CURDIR):$$PYTHONPATH" python3 scripts/navigation_capture_artifacts.py topics --schema "$$schema_path"); \
+		test -n "$$capture_topics" || (echo "capture schema produced no topics" && exit 1); \
+		echo "Recording dataset ROS topics: $$bag_path"; \
+		ros2 bag record -s "$(NAV_RECORD_STORAGE)" -b "$(NAV_RECORD_SPLIT_BYTES)" --output "$$bag_path" $$capture_topics >"$$bag_log" 2>&1 & bag_pid=$$!; \
+	else \
+		echo "Recording all ROS topics: $$bag_path"; \
+		ros2 bag record --all --include-hidden-topics --output "$$bag_path" >"$$bag_log" 2>&1 & bag_pid=$$!; \
+	fi; \
 	cleanup_bag() { if [ -n "$$bag_pid" ] && kill -0 "$$bag_pid" 2>/dev/null; then kill -INT "$$bag_pid"; wait "$$bag_pid" || true; fi; bag_pid=""; }; \
 	trap cleanup_bag EXIT INT TERM; \
-	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)" dashboard:="$(NAVIGATE_DASHBOARD)" dashboard_port:="$(DASHBOARD_PORT)" dashboard_auto_open:="$(DASHBOARD_AUTO_OPEN)" $(NAVIGATE_LAUNCH_ARGS); \
-	status=$$?; cleanup_bag; trap - EXIT INT TERM; python3 scripts/finalize_run_context.py "$$run_dir"; echo "Report: $$run_dir/dashboard.html"; exit $$status
+	PYTHONPATH="$(abspath $(PYTHON_PACKAGE_DIR)):$(CURDIR):$$PYTHONPATH" LD_PRELOAD="$${torch_preload}$${LD_PRELOAD:+:$$LD_PRELOAD}" ros2 launch g1_nav_bringup navigate_d435i.launch.py seed:="$(SEED)" duration_s:="$(NAVIGATE_DURATION)" output_dir:="$(abspath .)/$$run_dir" config_path:="$(abspath .)/$$run_dir/resolved_config.yaml" nav2_params_file:="$(abspath .)/$$run_dir/resolved_nav2_params.yaml" corridor_width_m:="$(CELL_SIZE_M)" unitree_rl_gym_repo:="$(abspath $(UNITREE_RL_GYM_REPO))" locomotion_policy:=unitree_rl_gym_native with_rviz:="$(NAVIGATE_WITH_RVIZ)" mujoco_viewer:="$(NAVIGATE_WITH_MUJOCO)" dashboard:="$(NAVIGATE_DASHBOARD)" dashboard_port:="$(DASHBOARD_PORT)" dashboard_auto_open:="$(DASHBOARD_AUTO_OPEN)" $(NAVIGATE_LAUNCH_ARGS) $(NAVIGATE_CAPTURE_LAUNCH_ARGS); \
+	status=$$?; cleanup_bag; trap - EXIT INT TERM; if [ -n "$(NAVIGATE_CAPTURE_SCHEMA)" ]; then PYTHONPATH="$(CURDIR):$$PYTHONPATH" python3 scripts/navigation_capture_artifacts.py finalize --run-dir "$$run_dir" --exit-code "$$status" || echo "capture finalization failed for $$run_dir"; fi; python3 scripts/finalize_run_context.py "$$run_dir"; echo "Report: $$run_dir/dashboard.html"; exit $$status
 
 odom-tune: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
@@ -347,6 +373,14 @@ heldout-report:
 bag-info:
 	@test -n "$(BAG)" || (echo "Usage: make bag-info BAG=runs/.../rosbag" && exit 1)
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then ros2 bag info "$(BAG)"; else DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh ros2 bag info "$(BAG)"; fi
+
+repair-run: storage-check
+	@test -n "$(RUN_DIR)" || (echo "Usage: make repair-run RUN_DIR=runs/navigate-record/seed-.../..." && exit 1)
+	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \
+		PYTHONPATH="$(CURDIR):$$PYTHONPATH" python3 scripts/navigation_capture_artifacts.py repair --run-dir "$(RUN_DIR)"; \
+	else \
+		DOCKER_IMAGE="$(DOCKER_IMAGE)" ROS_DOMAIN_ID="$(ROS_DOMAIN_ID)" docker/run.sh python3 scripts/navigation_capture_artifacts.py repair --run-dir "$(RUN_DIR)"; \
+	fi
 
 clean:
 	rm -rf ros_ws/build ros_ws/install ros_ws/log

@@ -56,7 +56,7 @@ case "${repo_real}/" in
 esac
 
 if [ -n "${EXPECTED_UUID}" ]; then
-  actual_uuid="$(findmnt -T "${mount_root}" -no UUID 2>/dev/null || true)"
+  actual_uuid="$(findmnt -T "${mount_root}" -no UUID 2>/dev/null | awk 'NF {print; exit}' || true)"
   [ "${actual_uuid}" = "${EXPECTED_UUID}" ] || fail \
     "storage UUID mismatch: expected ${EXPECTED_UUID}, got ${actual_uuid:-unknown}"
 fi

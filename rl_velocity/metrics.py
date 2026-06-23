@@ -52,6 +52,12 @@ METRIC_FIELDS = (
     "backward_time_s",
     "reverse_command_steps",
     "reverse_command_time_s",
+    "final_odom_position_error_m",
+    "mean_odom_position_error_m",
+    "max_odom_position_error_m",
+    "final_odom_yaw_error_deg",
+    "mean_odom_yaw_error_deg",
+    "max_odom_yaw_error_deg",
     "command_jerk",
     "corridor_width_m",
     "friction",
@@ -103,6 +109,12 @@ class EpisodeMetrics:
     backward_time_s: float
     reverse_command_steps: int
     reverse_command_time_s: float
+    final_odom_position_error_m: float
+    mean_odom_position_error_m: float
+    max_odom_position_error_m: float
+    final_odom_yaw_error_deg: float
+    mean_odom_yaw_error_deg: float
+    max_odom_yaw_error_deg: float
     command_jerk: float
     corridor_width_m: float
     friction: float
@@ -175,6 +187,12 @@ def summarize_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "backward_progress_m": sum(float(row.get("backward_progress_m", 0.0)) for row in rows),
         "reverse_command_steps": sum(int(row.get("reverse_command_steps", 0)) for row in rows),
         "reverse_command_time_s": sum(float(row.get("reverse_command_time_s", 0.0)) for row in rows),
+        "avg_final_odom_position_error_m": _mean(float(row.get("final_odom_position_error_m", 0.0)) for row in rows),
+        "avg_mean_odom_position_error_m": _mean(float(row.get("mean_odom_position_error_m", 0.0)) for row in rows),
+        "max_odom_position_error_m": max((float(row.get("max_odom_position_error_m", 0.0)) for row in rows), default=0.0),
+        "avg_final_odom_yaw_error_deg": _mean(float(row.get("final_odom_yaw_error_deg", 0.0)) for row in rows),
+        "avg_mean_odom_yaw_error_deg": _mean(float(row.get("mean_odom_yaw_error_deg", 0.0)) for row in rows),
+        "max_odom_yaw_error_deg": max((float(row.get("max_odom_yaw_error_deg", 0.0)) for row in rows), default=0.0),
         "avg_success_time_s": avg_success_time,
         "avg_goal_time_s": avg_success_time,
         "avg_distance_travelled_m": _mean(float(row.get("distance_travelled_m", 0.0)) for row in rows),

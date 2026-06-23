@@ -20,7 +20,7 @@ controller_server:
     general_goal_checker: {plugin: nav2_controller::SimpleGoalChecker, xy_goal_tolerance: 1.0, yaw_goal_tolerance: 3.14159, stateful: true}
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
-      min_vel_x: 0.0
+      min_vel_x: -0.3
       max_vel_x: 0.3
       max_vel_y: 0.0
       max_vel_theta: 1.0
@@ -56,7 +56,8 @@ behavior_server:
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
-    behavior_plugins: [wait]
+    behavior_plugins: [backup, wait]
+    backup: {plugin: nav2_behaviors/BackUp}
     wait: {plugin: nav2_behaviors/Wait}
 global_costmap:
   global_costmap:

@@ -71,7 +71,7 @@ def render_configs(
         limits.get("controller_frequency_hz", controller.get("controller_frequency", 12.0))
     )
     follow = controller["FollowPath"]
-    follow["min_vel_x"] = 0.0
+    follow["min_vel_x"] = float(nav_limits.get("max_reverse_mps", limits.get("max_reverse_mps", -0.30)))
     follow["min_speed_xy"] = 0.0
     follow["max_vel_x"] = speed
     follow["max_speed_xy"] = speed

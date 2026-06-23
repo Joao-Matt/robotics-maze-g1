@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 import sys
 import types
@@ -8,16 +9,17 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.modules.setdefault(
-    "numpy",
-    types.SimpleNamespace(
-        array=lambda values, dtype=None: list(values),
-        float32=float,
-        float64=float,
-        ndarray=object,
-        zeros=lambda size, dtype=None: [0.0] * int(size),
-    ),
-)
+if importlib.util.find_spec("numpy") is None:
+    sys.modules.setdefault(
+        "numpy",
+        types.SimpleNamespace(
+            array=lambda values, dtype=None: list(values),
+            float32=float,
+            float64=float,
+            ndarray=object,
+            zeros=lambda size, dtype=None: [0.0] * int(size),
+        ),
+    )
 
 from sim.locomotion_policy_adapter import VelocityCommand  # noqa: E402
 from sim.nav2_motion_session import NavigationLimits, Nav2MotionSession  # noqa: E402

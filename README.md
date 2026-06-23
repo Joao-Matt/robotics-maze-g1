@@ -198,6 +198,12 @@ corridor width, failure status, and turn/straight failure phase.
 The RL controller runs without ROS/Nav2/RViz. It learns high-level
 `vx`, `vy`, and `yaw_rate` commands around the frozen Unitree RL Gym G1
 locomotion policy using oracle path features and MuJoCo wall raycasts.
+The default curriculum includes right-turn, left-turn, mirrored S-turn,
+and reverse-recovery starts. During training, route-relative observations
+can be perturbed with bounded odom drift/noise from
+`rl_velocity_controller.odometry_training`; rewards and success checks still
+use MuJoCo ground truth so `/odom`-like errors are training difficulty, not
+live navigation input.
 Configuration lives in [configs/rl_velocity_controller.yaml](configs/rl_velocity_controller.yaml);
 outputs are written under `runs/rl_velocity/`.
 
@@ -338,6 +344,25 @@ make heldout-report SEEN_NAV_ROOT=runs/development-set/navigate
 runs/navigate/seed-<seed>/<timestamp>__cell_size-<N>m__duration-<N>s/rosbag/
 ```
 
+For dataset capture, use `make navigate-record`. It enables raw RGB-D at 3 Hz,
+records the documented topic allowlist from
+`configs/navigation_capture_topics.yaml`, writes 512 MB split SQLite bag files,
+and creates `capture_manifest.json`, `capture_validation.json`, and
+`capture_samples.csv`:
+
+```bash
+make navigate-record SEED=123
+```
+
+Repair or validate a dataset run after `kill -9` or power loss:
+
+```bash
+make repair-run RUN_DIR=runs/navigate-record/seed-123/<timestamp>
+```
+
+The capture schema and timestamp policy are documented in
+`docs/data_capture_schema.md`.
+
 `make slam` and `make slam-view` record the SLAM topics under:
 
 ```text
@@ -459,6 +484,15 @@ runs/navigate/seed-123/<timestamp>/
     map_thumb.png
   summary.json
   dashboard.html
+```
+
+Typical dataset capture run also includes:
+
+```text
+  capture_schema.yaml
+  capture_manifest.json
+  capture_validation.json
+  capture_samples.csv
 ```
 
 ## Verification

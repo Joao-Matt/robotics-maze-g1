@@ -1,4 +1,4 @@
-<!-- Unitree RL Gym native policy requires forward motion to turn reliably. -->
+<!-- Avoid in-place spin recovery; allow short reverse recovery for wall proximity. -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="2" name="NavigateRecovery">
@@ -32,6 +32,7 @@
               name="ClearGlobalCostmap-Recovery"
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
+          <BackUp backup_dist="0.20" backup_speed="0.08"/>
           <Wait wait_duration="1"/>
         </RoundRobin>
       </ReactiveFallback>

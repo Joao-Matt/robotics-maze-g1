@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import importlib.util
 import sys
+import types
 import unittest
 
 
@@ -133,12 +134,54 @@ class RlVelocityCurriculumTest(unittest.TestCase):
         from maze.validator import validate_maze
         from rl_velocity.curriculum import StageSpec, maze_for_stage
 
-        for kind in ("straight_corridor", "one_90_turn", "s_turns", "t_junctions"):
+        for kind in (
+            "straight_corridor",
+            "one_90_turn_right",
+            "one_90_turn_left",
+            "s_turns_right_first",
+            "s_turns_left_first",
+            "t_junctions",
+        ):
             stage = StageSpec(name=kind, kind=kind, width_cells=13, height_cells=13, cell_size_m=2.0)
             maze = maze_for_stage(stage, seed=7)
             result = validate_maze(maze, safety_radius_m=0.45, min_corridor_width_m=1.0)
             self.assertTrue(result.is_valid, result.errors)
             self.assertIsNotNone(result.path)
+
+    def test_one_turn_curriculum_covers_left_and_right_arcs(self) -> None:
+        from nav.oracle_follow import TurnAwareFollowerConfig, build_turn_aware_path
+        from nav.planner import plan_oracle_path
+        from rl_velocity.curriculum import StageSpec, maze_for_stage
+
+        directions = {}
+        for kind in ("one_90_turn_right", "one_90_turn_left"):
+            stage = StageSpec(name=kind, kind=kind, width_cells=9, height_cells=9, cell_size_m=2.0)
+            maze = maze_for_stage(stage, seed=7)
+            plan = plan_oracle_path(maze, simplify=False, planner="heading_astar", turn_penalty_cost=2.0)
+            path = build_turn_aware_path(maze, plan.cells, TurnAwareFollowerConfig())
+            directions[kind] = [segment.turn_direction for segment in path.arc_segments]
+
+        self.assertIn("right", directions["one_90_turn_right"])
+        self.assertIn("left", directions["one_90_turn_left"])
+
+    def test_stage_specs_keep_reverse_recovery_yaw_offsets(self) -> None:
+        from rl_velocity.curriculum import load_stage_specs
+
+        stages = load_stage_specs(
+            {
+                "curriculum": {
+                    "stages": [
+                        {
+                            "name": "reverse_recovery_left",
+                            "kind": "straight_corridor",
+                            "start_yaw_offset_rad": -2.8,
+                        }
+                    ]
+                }
+            }
+        )
+
+        self.assertAlmostEqual(stages[0].start_yaw_offset_rad, -2.8)
 
 
 @unittest.skipUnless(
@@ -187,6 +230,83 @@ class RlVelocityEnvHelperTest(unittest.TestCase):
         self.assertEqual(capped["yaw_rate_max_radps"], 2.0)
         self.assertEqual(capped["vy_min_mps"], -1.5)
         self.assertEqual(capped["vy_max_mps"], 1.5)
+
+    def test_odom_pose_applies_bias_noise_and_wraps_yaw(self) -> None:
+        from nav.controller import Pose2D
+        from rl_velocity.env import G1MazeVelocityEnv
+
+        env = object.__new__(G1MazeVelocityEnv)
+        env.odom_bias_x_m = 0.10
+        env.odom_bias_y_m = -0.20
+        env.odom_bias_yaw_rad = 0.30
+        env.odom_noise_x_m = 0.01
+        env.odom_noise_y_m = 0.02
+        env.odom_noise_yaw_rad = 0.04
+
+        pose = env._odom_pose_from_truth(Pose2D(x=1.0, y=2.0, yaw=3.10))
+
+        self.assertAlmostEqual(pose.x, 1.11)
+        self.assertAlmostEqual(pose.y, 1.82)
+        self.assertGreaterEqual(pose.yaw, -3.141593)
+        self.assertLessEqual(pose.yaw, 3.141593)
+
+    def test_odom_bias_clip_bounds_translation_and_yaw(self) -> None:
+        from rl_velocity.env import G1MazeVelocityEnv
+
+        env = object.__new__(G1MazeVelocityEnv)
+        env.odometry_training = {"max_xy_bias_m": 0.25, "max_yaw_bias_rad": 0.5}
+        env.odom_bias_x_m = 3.0
+        env.odom_bias_y_m = 4.0
+        env.odom_bias_yaw_rad = 2.0
+
+        env._clip_odom_bias()
+
+        self.assertAlmostEqual((env.odom_bias_x_m**2 + env.odom_bias_y_m**2) ** 0.5, 0.25)
+        self.assertAlmostEqual(env.odom_bias_yaw_rad, 0.5)
+
+    def test_reverse_reward_reduces_backtrack_penalty_when_misaligned(self) -> None:
+        import numpy as np
+        from rl_velocity.env import G1MazeVelocityEnv
+        from sim.locomotion_policy_adapter import VelocityCommand
+
+        env = object.__new__(G1MazeVelocityEnv)
+        env.reward_weights = {
+            "progress": 8.0,
+            "reverse_backtrack_penalty_scale": 0.35,
+            "reverse_heading_error_threshold_rad": 1.75,
+            "reverse_misaligned": 0.0,
+            "aligned_speed": 0.0,
+            "tilt": 0.0,
+            "command_jerk": 0.0,
+        }
+        env.termination = {"spin_yaw_rate_radps": 0.75}
+        env.action_dt = 0.1
+        env.previous_action = np.zeros(3, dtype=np.float32)
+        env.wall_contact_this_step = False
+        env.stuck_active_since = None
+        env.data = types.SimpleNamespace(qpos=[0.0, 0.0, 0.8, 1.0, 0.0, 0.0, 0.0])
+        projection = types.SimpleNamespace(heading_error_rad=2.2)
+
+        reverse_reward = env._reward(
+            projection=projection,
+            progress_delta=-0.1,
+            action=np.zeros(3, dtype=np.float32),
+            command=VelocityCommand(vx=-0.2),
+            status="RUNNING",
+            terminated=False,
+            truncated=False,
+        )
+        forward_reward = env._reward(
+            projection=projection,
+            progress_delta=-0.1,
+            action=np.zeros(3, dtype=np.float32),
+            command=VelocityCommand(vx=0.2),
+            status="RUNNING",
+            terminated=False,
+            truncated=False,
+        )
+
+        self.assertGreater(reverse_reward, forward_reward)
 
 
 @unittest.skipUnless(
