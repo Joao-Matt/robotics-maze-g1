@@ -1,0 +1,211 @@
+diff --git a/explore/include/explore/explore.h b/explore/include/explore/explore.h
+index 2583d59..eac0534 100644
+--- a/explore/include/explore/explore.h
++++ b/explore/include/explore/explore.h
+@@ -143,7 +143,9 @@ private:
+   bool visualize_;
+   bool return_to_init_;
+   bool prefer_minimum_turn_;
++  bool clear_blacklist_on_resume_;
+   double max_frontier_goal_distance_;
++  bool goal_in_known_space_;
+   std::string robot_base_frame_;
+   bool resuming_ = false;
+   bool goal_active_{false};
+diff --git a/explore/src/explore.cpp b/explore/src/explore.cpp
+index d46a504..2976f2c 100644
+--- a/explore/src/explore.cpp
++++ b/explore/src/explore.cpp
+@@ -38,8 +38,12 @@
+ 
+ #include <explore/explore.h>
+ 
++#include <limits>
++#include <mutex>
+ #include <thread>
+ 
++#include "nav2_costmap_2d/cost_values.hpp"
++
+ inline static bool same_point(const geometry_msgs::msg::Point& one,
+                               const geometry_msgs::msg::Point& two)
+ {
+@@ -49,6 +53,70 @@ inline static bool same_point(const geometry_msgs::msg::Point& one,
+   return dist < 0.01;
+ }
+ 
++inline static bool nearest_known_free_frontier_goal(
++    const frontier_exploration::Frontier& frontier,
++    const geometry_msgs::msg::Point& robot_position,
++    nav2_costmap_2d::Costmap2D* costmap,
++    geometry_msgs::msg::Point& goal)
++{
++  if (costmap == nullptr) {
++    return false;
++  }
++
++  std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(
++      *(costmap->getMutex()));
++  const unsigned char* map = costmap->getCharMap();
++  const unsigned int size_x = costmap->getSizeInCellsX();
++  const unsigned int size_y = costmap->getSizeInCellsY();
++  double best_distance = std::numeric_limits<double>::infinity();
++  bool found = false;
++
++  const auto consider_cell = [&](const unsigned int mx, const unsigned int my) {
++    if (mx >= size_x || my >= size_y) {
++      return;
++    }
++    const unsigned int idx = costmap->getIndex(mx, my);
++    if (map[idx] != nav2_costmap_2d::FREE_SPACE) {
++      return;
++    }
++    double wx = 0.0;
++    double wy = 0.0;
++    costmap->mapToWorld(mx, my, wx, wy);
++    const double dx = wx - robot_position.x;
++    const double dy = wy - robot_position.y;
++    const double distance = std::sqrt(dx * dx + dy * dy);
++    if (distance < best_distance) {
++      best_distance = distance;
++      goal.x = wx;
++      goal.y = wy;
++      goal.z = 0.0;
++      found = true;
++    }
++  };
++
++  for (const auto& point : frontier.points) {
++    unsigned int mx = 0;
++    unsigned int my = 0;
++    if (!costmap->worldToMap(point.x, point.y, mx, my)) {
++      continue;
++    }
++    if (mx > 0) {
++      consider_cell(mx - 1, my);
++    }
++    if (mx + 1 < size_x) {
++      consider_cell(mx + 1, my);
++    }
++    if (my > 0) {
++      consider_cell(mx, my - 1);
++    }
++    if (my + 1 < size_y) {
++      consider_cell(mx, my + 1);
++    }
++  }
++
++  return found;
++}
++
+ namespace explore
+ {
+ Explore::Explore()
+@@ -71,7 +139,9 @@ Explore::Explore()
+   this->declare_parameter<float>("min_frontier_size", 0.5);
+   this->declare_parameter<bool>("return_to_init", false);
+   this->declare_parameter<bool>("prefer_minimum_turn", false);
++  this->declare_parameter<bool>("clear_blacklist_on_resume", true);
+   this->declare_parameter<float>("max_frontier_goal_distance", 4.5);
++  this->declare_parameter<bool>("goal_in_known_space", false);
+ 
+   this->get_parameter("planner_frequency", planner_frequency_);
+   this->get_parameter("progress_timeout", timeout);
+@@ -82,7 +152,9 @@ Explore::Explore()
+   this->get_parameter("min_frontier_size", min_frontier_size);
+   this->get_parameter("return_to_init", return_to_init_);
+   this->get_parameter("prefer_minimum_turn", prefer_minimum_turn_);
++  this->get_parameter("clear_blacklist_on_resume", clear_blacklist_on_resume_);
+   this->get_parameter("max_frontier_goal_distance", max_frontier_goal_distance_);
++  this->get_parameter("goal_in_known_space", goal_in_known_space_);
+   this->get_parameter("robot_base_frame", robot_base_frame_);
+ 
+   progress_timeout_ = timeout;
+@@ -291,17 +363,29 @@ void Explore::makePlan()
+     stop(true);
+     return;
+   }
+-  geometry_msgs::msg::Point target_position = frontier->centroid;
+-  const double target_dx = target_position.x - pose.position.x;
+-  const double target_dy = target_position.y - pose.position.y;
+-  const double target_distance = std::sqrt(target_dx * target_dx + target_dy * target_dy);
+-  if (max_frontier_goal_distance_ > 0.0 &&
+-      target_distance > max_frontier_goal_distance_) {
+-    const double scale = max_frontier_goal_distance_ / target_distance;
+-    target_position.x = pose.position.x + target_dx * scale;
+-    target_position.y = pose.position.y + target_dy * scale;
+-    RCLCPP_DEBUG(logger_, "Capped frontier goal from %.2f m to %.2f m lookahead",
+-                 target_distance, max_frontier_goal_distance_);
++  const geometry_msgs::msg::Point frontier_goal = frontier->centroid;
++  geometry_msgs::msg::Point target_position = frontier_goal;
++  if (goal_in_known_space_) {
++    if (!nearest_known_free_frontier_goal(*frontier, pose.position,
++                                          costmap_client_.getCostmap(),
++                                          target_position)) {
++      frontier_blacklist_.push_back(frontier_goal);
++      RCLCPP_WARN(logger_, "Selected frontier had no adjacent known-free goal; blacklisting it");
++      makePlan();
++      return;
++    }
++  } else {
++    const double target_dx = target_position.x - pose.position.x;
++    const double target_dy = target_position.y - pose.position.y;
++    const double target_distance = std::sqrt(target_dx * target_dx + target_dy * target_dy);
++    if (max_frontier_goal_distance_ > 0.0 &&
++        target_distance > max_frontier_goal_distance_) {
++      const double scale = max_frontier_goal_distance_ / target_distance;
++      target_position.x = pose.position.x + target_dx * scale;
++      target_position.y = pose.position.y + target_dy * scale;
++      RCLCPP_DEBUG(logger_, "Capped frontier goal from %.2f m to %.2f m lookahead",
++                   target_distance, max_frontier_goal_distance_);
++    }
+   }
+ 
+   // time out if we are not making any progress
+@@ -318,7 +402,7 @@ void Explore::makePlan()
+       (this->now() - last_progress_ >
+        tf2::durationFromSec(progress_timeout_)) &&
+       !resuming_) {
+-    frontier_blacklist_.push_back(target_position);
++    frontier_blacklist_.push_back(frontier_goal);
+     RCLCPP_DEBUG(logger_, "Adding current goal to black list");
+     makePlan();
+     return;
+@@ -360,10 +444,10 @@ void Explore::makePlan()
+       };
+ 
+   send_goal_options.result_callback =
+-      [this,
+-       target_position](const NavigationGoalHandle::WrappedResult& result) {
+-        reachedGoal(result, target_position);
+-      };
++  [this,
++   frontier_goal](const NavigationGoalHandle::WrappedResult& result) {
++    reachedGoal(result, frontier_goal);
++  };
+   move_base_client_->async_send_goal(goal, send_goal_options);
+ }
+ 
+@@ -494,6 +578,23 @@ void Explore::stop(bool finished_exploring)
+ void Explore::resume()
+ {
+   resuming_ = true;
++  if (clear_blacklist_on_resume_) {
++    const auto cleared_goals = frontier_blacklist_.size();
++    frontier_blacklist_.clear();
++    prev_distance_ = 0;
++    prev_goal_ = geometry_msgs::msg::Point();
++    last_progress_ = this->now();
++    if (cleared_goals > 0) {
++      RCLCPP_WARN(logger_,
++                  "Cleared %zu blacklisted frontier goals while resuming. "
++                  "If reset/recenter still finds no new points, try respawning only explore_node.",
++                  cleared_goals);
++    } else {
++      RCLCPP_INFO(logger_,
++                  "Resume reset found no blacklisted frontiers to clear. "
++                  "If exploration still completes immediately, try respawning only explore_node.");
++    }
++  }
+   RCLCPP_INFO(logger_, "Exploration resuming.");
+   auto status_msg = explore_lite_msgs::msg::ExploreStatus();
+   status_msg.status = explore_lite_msgs::msg::ExploreStatus::EXPLORATION_IN_PROGRESS;

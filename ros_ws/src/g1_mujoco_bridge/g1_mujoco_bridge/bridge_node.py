@@ -23,8 +23,6 @@ from nav_msgs.msg import Odometry, Path as NavPath
 from std_msgs.msg import String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
-from maze.generator import generate_maze_from_config
-from maze.validator import validate_maze
 from sim.config import load_config
 from sim.d435i_sensor import D435iSpec
 from sim.mujoco_runner import import_mujoco
@@ -32,26 +30,8 @@ from sim.mujoco_runner import _write_png
 from sim.oracle_motion_session import OracleMotionSession
 from sim.nav2_motion_session import Nav2MotionSession
 from sim.locomotion_policy_adapter import VelocityCommand
-from sim.world_builder import build_maze_world, cell_to_world_xy
-
-
-def _yaw_for_first_corridor(config: dict, seed: int) -> float:
-    maze = generate_maze_from_config(config, seed)
-    path = validate_maze(
-        maze,
-        safety_radius_m=float(config["robot"]["safety_radius_m"]),
-        min_corridor_width_m=float(config["maze"]["min_corridor_width_m"]),
-        max_corridor_width_m=(
-            float(config["maze"]["max_corridor_width_m"])
-            if "max_corridor_width_m" in config["maze"]
-            else None
-        ),
-    ).path
-    if len(path) < 2:
-        return 0.0
-    start = cell_to_world_xy(maze, path[0])
-    following = cell_to_world_xy(maze, path[1])
-    return math.atan2(following[1] - start[1], following[0] - start[0])
+from sim.spawn_orientation import resolve_initial_spawn_yaw
+from sim.world_builder import build_maze_world
 
 
 class G1MujocoBridge(Node):
@@ -126,9 +106,8 @@ class G1MujocoBridge(Node):
         self.model = self.mujoco.MjModel.from_xml_path(self.world.model_xml_path)
         self.data = self.mujoco.MjData(self.model)
         self.data.qpos[:3] = np.asarray(self.world.start_world_xyz)
-        configured_yaw=float(self.get_parameter("initial_spawn_yaw_rad").value)
-        if not math.isfinite(configured_yaw):configured_yaw=float(self.config.get("nav2_navigation",{}).get("initial_spawn_yaw_rad",0.0))
-        yaw = configured_yaw if self.motion_mode == "nav2_navigation" else _yaw_for_first_corridor(self.config, self.seed)
+        configured_yaw = float(self.get_parameter("initial_spawn_yaw_rad").value)
+        yaw = configured_yaw if math.isfinite(configured_yaw) else resolve_initial_spawn_yaw(self.config, self.seed)
         self.data.qpos[3:7] = [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)]
         self.mujoco.mj_forward(self.model, self.data)
         self.held_qpos = self.data.qpos.copy()

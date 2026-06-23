@@ -122,10 +122,11 @@ When `LOCOMOTION_CALIBRATION` is set, `navigate`, `navigate-view`,
 `navigate-full-view`, and `demo` default to `NAV2_LIMIT_MODE=use-calibration`.
 That makes Nav2's rendered `max_vel_x`, `max_speed_xy`, and `max_vel_theta`
 use the measured command envelope through the maze-stability caps in
-`nav2_navigation.calibrated_nav2_*`. This keeps open-floor calibration from
-turning into twitchy wall-proximal commands. To keep the older conservative
-behavior where calibration only caps the configured Nav2 limits, pass
-`NAV2_LIMIT_MODE=cap`.
+`nav2_navigation.calibrated_nav2_*`. Normal DWB path following remains
+forward-only by default; controlled reverse is still available through the Nav2
+BackUp recovery behavior and the bridge-side `max_reverse_mps` limit. To keep
+the conservative behavior where calibration only caps the configured Nav2
+limits, pass `NAV2_LIMIT_MODE=cap`.
 
 To try those calibrated limits inside a maze without ROS/Nav2, run the
 direct MuJoCo oracle maze follower with the same JSON:
@@ -230,6 +231,11 @@ Run cold-start navigation with SLAM, `m-explore`, Nav2, and rosbag:
 ```bash
 make navigate SEED=123 CELL_SIZE_M=4.0 NAVIGATE_DURATION=1200
 ```
+
+By default, `nav2_navigation.initial_spawn_yaw_rad: auto` faces the robot from
+the generated start cell into the first validated corridor, not toward the wall.
+Set that config value to a numeric yaw in radians only when intentionally testing
+a fixed spawn orientation.
 
 Open RViz during navigation:
 

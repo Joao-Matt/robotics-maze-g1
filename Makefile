@@ -194,6 +194,12 @@ fetch-m-explore: storage-check
 	elif git -C "$(M_EXPLORE_REPO)" apply --reverse --check "$(abspath patches/m-explore-ros2-humble-latest-tf.patch)" >/dev/null 2>&1; then :; else \
 		git -C "$(M_EXPLORE_REPO)" apply "$(abspath patches/m-explore-ros2-humble-latest-tf.patch)"; \
 	fi
+	@if grep -q 'goal_in_known_space' "$(M_EXPLORE_REPO)/explore/src/explore.cpp" && \
+		grep -q 'goal_in_known_space_' "$(M_EXPLORE_REPO)/explore/include/explore/explore.h"; then \
+		echo "m-explore known-free goal patch already present"; \
+	elif git -C "$(M_EXPLORE_REPO)" apply --reverse --check "$(abspath patches/m-explore-ros2-known-free-goals.patch)" >/dev/null 2>&1; then :; else \
+		git -C "$(M_EXPLORE_REPO)" apply "$(abspath patches/m-explore-ros2-known-free-goals.patch)"; \
+	fi
 
 prebuild: storage-check
 	@if [ "$${ROS_DISTRO:-}" = "humble" ]; then \

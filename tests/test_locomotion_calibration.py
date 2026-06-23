@@ -164,6 +164,7 @@ class NavigationCalibrationCompatibilityTest(unittest.TestCase):
                     "locomotion_policy": "unitree_rl_gym_native",
                     "max_forward_mps": 1.5,
                     "max_reverse_mps": -0.3,
+                    "dwb_min_vel_x_mps": 0.0,
                     "min_forward_mps": 0.1,
                     "max_yaw_rate_radps": 2.0,
                     "turn_slowdown_start_radps": 0.8,
@@ -215,9 +216,10 @@ class NavigationCalibrationCompatibilityTest(unittest.TestCase):
                 "controller_server"
             ]["ros__parameters"]["FollowPath"]
             self.assertEqual(resolved["nav2_navigation"]["max_forward_mps"], 0.8)
+            self.assertEqual(resolved["nav2_navigation"]["max_reverse_mps"], -0.3)
             self.assertEqual(resolved["nav2_navigation"]["max_yaw_rate_radps"], 0.7)
             self.assertEqual(follow["max_vel_x"], 0.8)
-            self.assertEqual(follow["min_vel_x"], -0.3)
+            self.assertEqual(follow["min_vel_x"], 0.0)
             self.assertEqual(follow["max_vel_theta"], 0.7)
             self.assertNotIn("final_pose", rendered_text)
             self.assertNotIn("trajectory", rendered_text)
@@ -264,6 +266,53 @@ class NavigationCalibrationCompatibilityTest(unittest.TestCase):
             for section in ("global_costmap", "local_costmap"):
                 params = rendered[section][section]["ros__parameters"]
                 self.assertEqual(params["inflation_layer"]["inflation_radius"], 1.0)
+
+    def test_render_config_clamps_inflation_radius_for_tight_corridors(self) -> None:
+        from scripts.render_navigation_config import render_configs
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = {
+                "maze": {"cell_size_m": 2.0, "cell_width_m": 2.0, "cell_length_m": 2.0},
+                "nav2_navigation": {
+                    "locomotion_policy": "unitree_rl_gym_native",
+                    "max_forward_mps": 0.45,
+                    "max_yaw_rate_radps": 0.9,
+                    "inflation_radius_cell_width_fraction": 0.35,
+                    "inflation_radius_min_m": 0.85,
+                    "inflation_radius_max_m": 1.20,
+                },
+            }
+            nav = {
+                "controller_server": {"ros__parameters": {"FollowPath": {}}},
+                "global_costmap": {"global_costmap": {"ros__parameters": {"inflation_layer": {}}}},
+                "local_costmap": {"local_costmap": {"ros__parameters": {"inflation_layer": {}}}},
+            }
+            calibration = {
+                "selected_max_forward_mps": 0.45,
+                "recommended_safe_limits": {"max_safe_vx": 0.45, "max_safe_wz": 0.9},
+            }
+            config_path = root / "config.yaml"
+            nav_path = root / "nav.yaml"
+            cal_path = root / "calibration.json"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            nav_path.write_text(yaml.safe_dump(nav), encoding="utf-8")
+            cal_path.write_text(__import__("json").dumps(calibration), encoding="utf-8")
+
+            render_configs(
+                config_path=config_path,
+                nav2_template_path=nav_path,
+                calibration_path=cal_path,
+                output_dir=root / "out",
+                cell_size_m=2.0,
+            )
+
+            rendered = yaml.safe_load((root / "out" / "resolved_nav2_params.yaml").read_text(encoding="utf-8"))
+            resolved = yaml.safe_load((root / "out" / "resolved_config.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(resolved["nav2_navigation"]["inflation_radius_m"], 0.85)
+            for section in ("global_costmap", "local_costmap"):
+                params = rendered[section][section]["ros__parameters"]
+                self.assertEqual(params["inflation_layer"]["inflation_radius"], 0.85)
 
 
 class OracleCalibrationCompatibilityTest(unittest.TestCase):

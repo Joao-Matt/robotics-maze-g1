@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 import json
+import math
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -32,6 +33,7 @@ class WorldBuildResult:
     start_cell: Cell
     goal_cell: Cell
     start_world_xyz: tuple[float, float, float]
+    start_yaw_rad: float
     goal_world_xyz: tuple[float, float, float]
     coordinate_convention: str
 
@@ -92,7 +94,8 @@ def build_maze_world(
     tree = _load_base_model_tree(base_model_path)
     install_d435i(tree, config)
     _append_world_geometry(tree, maze, config)
-    _place_stand_keyframe_at_start(tree, maze, config)
+    start_yaw = _start_keyframe_yaw(maze, validation.path, config)
+    _place_stand_keyframe_at_start(tree, maze, config, start_yaw)
     tree.write(world_xml_path, encoding="utf-8", xml_declaration=True)
 
     save_svg(maze, topdown_svg_path, validation.path, cell_px=48)
@@ -113,6 +116,7 @@ def build_maze_world(
         start_cell=maze.spec.start_cell,
         goal_cell=maze.spec.goal_cell,
         start_world_xyz=(start_x, start_y, _robot_base_height(config)),
+        start_yaw_rad=start_yaw,
         goal_world_xyz=(goal_x, goal_y, 0.0),
         coordinate_convention=COORDINATE_CONVENTION,
     )
@@ -246,7 +250,7 @@ def _append_marker(worldbody: ET.Element, maze: Maze, cell: Cell, name: str, rgb
     )
 
 
-def _place_stand_keyframe_at_start(tree: ET.ElementTree, maze: Maze, config: dict[str, Any]) -> None:
+def _place_stand_keyframe_at_start(tree: ET.ElementTree, maze: Maze, config: dict[str, Any], yaw: float) -> None:
     root = tree.getroot()
     keyframe_name = config.get("robot", {}).get("initial_keyframe", "stand")
     if not keyframe_name:
@@ -271,7 +275,32 @@ def _place_stand_keyframe_at_start(tree: ET.ElementTree, maze: Maze, config: dic
     qpos_values[0] = start_x
     qpos_values[1] = start_y
     qpos_values[2] = _robot_base_height(config)
+    qpos_values[3:7] = [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)]
     key.set("qpos", _format_float_list(qpos_values))
+
+
+def _start_keyframe_yaw(maze: Maze, path: list[Cell], config: dict[str, Any]) -> float:
+    raw = config.get("nav2_navigation", {}).get("initial_spawn_yaw_rad")
+    if isinstance(raw, str) and raw.strip().lower() not in {"", "auto", "corridor", "first_corridor", "towards_corridor"}:
+        try:
+            yaw = float(raw)
+            if math.isfinite(yaw):
+                return yaw
+        except ValueError as exc:
+            raise ValueError(f"Unsupported initial_spawn_yaw_rad value: {raw!r}") from exc
+        raise ValueError(f"initial_spawn_yaw_rad must be finite, got {raw!r}")
+    elif raw is not None and not isinstance(raw, str):
+        try:
+            yaw = float(raw)
+            if math.isfinite(yaw):
+                return yaw
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Unsupported initial_spawn_yaw_rad value: {raw!r}") from exc
+    if len(path) < 2:
+        return 0.0
+    start = cell_to_world_xy(maze, path[0])
+    following = cell_to_world_xy(maze, path[1])
+    return math.atan2(following[1] - start[1], following[0] - start[0])
 
 
 def _float_list(raw: str) -> list[float]:

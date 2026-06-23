@@ -38,13 +38,16 @@ from g1_nav_bringup.live_kpi_metrics import (
     message_rate,
     occupancy_stats,
     path_length,
+    projected_free_space_coverage_stats,
     scan_clearance,
 )
 from maze.generator import generate_maze_from_config
+from maze.grid import WALL, physical_cell_length_m, physical_cell_width_m
 from nav.path_progress import path_progress_metrics
 from nav.planner import PlanningError, plan_oracle_path
 from sim.config import load_config
 from sim.mujoco_runner import _write_png
+from sim.spawn_orientation import resolve_initial_spawn_yaw
 from sim.world_builder import cell_to_world_xy
 
 
@@ -188,6 +191,8 @@ class LiveKpiMonitor(Node):
         self.duration_s = float(self.get_parameter("duration_s").value)
         self.config = self._load_config()
         self.maze, self.goal_xy, self.optimal_path_m, self.oracle_path_xy = self._maze_reference()
+        self.spawn_yaw = resolve_initial_spawn_yaw(self.config, self.seed)
+        self.start_world = cell_to_world_xy(self.maze, self.maze.spec.start_cell)
         self.expected_rates = self._expected_rates()
 
         self.topic_times: defaultdict[str, deque[float]] = defaultdict(_rate_window)
@@ -305,9 +310,76 @@ class LiveKpiMonitor(Node):
     def _map(self, msg: OccupancyGrid) -> None:
         self._seen("map", _stamp(msg.header.stamp))
         self.latest_map = msg
-        self.latest_map_stats = occupancy_stats(msg.data)
+        self.latest_map_stats = self._map_stats(msg)
         if self.first_map_wall is None:
             self.first_map_wall = time.monotonic()
+
+    def _map_stats(self, msg: OccupancyGrid) -> dict[str, object]:
+        raw = occupancy_stats(msg.data)
+        stats: dict[str, object] = {
+            **raw,
+            "raw_known_coverage_fraction": raw["coverage_fraction"],
+            "raw_known_cells": raw["known_cells"],
+            "raw_total_cells": raw["total_cells"],
+        }
+        truth = self._full_truth_grid_for_resolution(msg.info.resolution)
+        if truth is not None:
+            truth_grid, truth_origin_x, truth_origin_y = truth
+            try:
+                stats.update(
+                    projected_free_space_coverage_stats(
+                        msg.data,
+                        slam_width=int(msg.info.width),
+                        slam_height=int(msg.info.height),
+                        slam_origin_x=float(msg.info.origin.position.x),
+                        slam_origin_y=float(msg.info.origin.position.y),
+                        truth_data=truth_grid.ravel().tolist(),
+                        truth_width=int(truth_grid.shape[1]),
+                        truth_height=int(truth_grid.shape[0]),
+                        truth_origin_x=truth_origin_x,
+                        truth_origin_y=truth_origin_y,
+                        resolution=float(msg.info.resolution),
+                    )
+                )
+            except ValueError as exc:
+                stats["coverage_warning"] = str(exc)
+        return stats
+
+    def _full_truth_grid_for_resolution(self, resolution: float) -> tuple[np.ndarray, float, float] | None:
+        if resolution <= 0.0:
+            return None
+        half_w = self.maze.spec.width_cells * physical_cell_width_m(self.maze.spec) / 2.0
+        half_h = self.maze.spec.height_cells * physical_cell_length_m(self.maze.spec) / 2.0
+        world = np.asarray([[-half_w, -half_h], [-half_w, half_h], [half_w, -half_h], [half_w, half_h]])
+        c, s = math.cos(self.spawn_yaw), math.sin(self.spawn_yaw)
+        delta = world - np.asarray(self.start_world)
+        map_xy = np.column_stack((c * delta[:, 0] + s * delta[:, 1], -s * delta[:, 0] + c * delta[:, 1]))
+        origin = np.floor(map_xy.min(axis=0) / resolution) * resolution
+        upper = np.ceil(map_xy.max(axis=0) / resolution) * resolution
+        width, height = np.maximum(1, np.ceil((upper - origin) / resolution).astype(int))
+        truth = self._truth_grid(int(width), int(height), resolution, float(origin[0]), float(origin[1]))
+        return truth, float(origin[0]), float(origin[1])
+
+    def _truth_grid(self, width: int, height: int, resolution: float, origin_x: float, origin_y: float) -> np.ndarray:
+        rows, cols = np.indices((height, width), dtype=float)
+        ox = origin_x + (cols + 0.5) * resolution
+        oy = origin_y + (rows + 0.5) * resolution
+        c, s = math.cos(self.spawn_yaw), math.sin(self.spawn_yaw)
+        wx = self.start_world[0] + c * ox - s * oy
+        wy = self.start_world[1] + s * ox + c * oy
+        cell_w = physical_cell_width_m(self.maze.spec)
+        cell_l = physical_cell_length_m(self.maze.spec)
+        maze_cols = np.floor(wx / cell_w + self.maze.spec.width_cells / 2).astype(int)
+        maze_rows = np.floor(self.maze.spec.height_cells / 2 - wy / cell_l).astype(int)
+        valid = (
+            (maze_rows >= 0)
+            & (maze_rows < self.maze.spec.height_cells)
+            & (maze_cols >= 0)
+            & (maze_cols < self.maze.spec.width_cells)
+        )
+        truth = np.full((height, width), -1, dtype=np.int16)
+        truth[valid] = np.where(self.maze.grid[maze_rows[valid], maze_cols[valid]] == WALL, 100, 0)
+        return truth
 
     def _scan(self, msg: LaserScan) -> None:
         values = scan_clearance(msg.ranges, msg.range_min, msg.range_max)
@@ -787,7 +859,8 @@ class LiveKpiMonitor(Node):
                 "distance_traveled_m",
                 "path_efficiency",
                 "goal_error_m",
-                "coverage_fraction",
+                "free_space_coverage_fraction",
+                "raw_known_coverage_fraction",
                 "min_clearance_m",
                 "ate_rmse_m",
                 "realtime_factor",
@@ -809,7 +882,8 @@ class LiveKpiMonitor(Node):
                 mission.get("distance_traveled_m"),
                 mission.get("path_efficiency"),
                 mission.get("final_goal_error_m"),
-                mapping.get("coverage_fraction"),
+                mapping.get("free_space_coverage_fraction", mapping.get("coverage_fraction")),
+                mapping.get("raw_known_coverage_fraction"),
                 safety.get("min_wall_clearance_m"),
                 localization.get("position_rmse_m") if isinstance(localization, dict) else None,
                 data_quality.get("realtime_factor") if isinstance(data_quality, dict) else None,
@@ -923,7 +997,7 @@ section{min-width:0}.demo-panel{margin:0 0 20px;padding-bottom:18px;border-botto
 <div class="status-line">
 <div class="stat"><b>Status</b><span id="status">-</span></div>
 <div class="stat"><b>RTF</b><span id="rtf">-</span></div>
-<div class="stat"><b>Coverage</b><span id="coverage">-</span></div>
+<div class="stat"><b>Free Space</b><span id="coverage">-</span></div>
 </div>
 <section class="kpi-group"><h2>Data Quality</h2><h3>Topic Health</h3><div class="rows" id="topics"></div></section>
 </aside>
@@ -935,7 +1009,7 @@ const groups=[
  {key:"mission",eyebrow:"Mission",title:"Efficiency and speed",rows:[["Path efficiency","mission.path_efficiency","ratio"],["Path completion","mission.final_path_completion_fraction","pct"],["Time elapsed","mission.sim_elapsed_s","s"],["Final goal error","mission.final_goal_error_m","m"]]},
  {key:"safety_motion",eyebrow:"Safety and motion",title:"Did it move cleanly?",rows:[["Wall collisions","safety_motion.wall_collisions"],["Run-min clearance","safety_motion.min_wall_clearance_m","m"],["Latest clearance","safety_motion.latest_scan_clearance_m","m"],["Stuck events and recoveries","safety_motion.stuck_events_and_recoveries"],["Yaw accel RMS","safety_motion.smoothness.yaw_accel_rms_radps2","rad/s2"]]},
  {key:"localization",eyebrow:"Localization",title:"Did it know where it was?",rows:[["ATE vs ground truth","localization.position_rmse_m","m"],["Final odom error","localization.final_position_error_m","m"],["Final drift / meter","localization.final_position_error_per_meter","ratio"],["Yaw p95","localization.yaw_p95_deg","deg"],["Odom jumps","localization.sudden_translation_jump_count"],["Drift scale","localization.distance_scale","ratio"],["Aligned samples","localization.aligned_samples"]]},
- {key:"mapping",eyebrow:"Mapping",title:"Did it map the maze?",rows:[["Map coverage","mapping.coverage_fraction","pct"],["Known cells","mapping.known_cells"],["Free cells","mapping.free_cells"],["Plan updates","mapping.nav2_plan_updates"]]},
+ {key:"mapping",eyebrow:"Mapping",title:"Did it map the maze?",rows:[["Free-space coverage","mapping.coverage_fraction","pct"],["Known free cells","mapping.known_free_space_cells"],["Truth free cells","mapping.truth_free_cells"],["Raw known coverage","mapping.raw_known_coverage_fraction","pct"],["Plan updates","mapping.nav2_plan_updates"]]},
  {key:"reliability",eyebrow:"Reliability",title:"Would it run unsupervised?",rows:[["MTBF","reliability.mtbf_m_per_failure","m"],["Failure taxonomy","reliability.failure_taxonomy"],["Realtime factor","reliability.realtime_factor","ratio"],["Solve vs complexity","reliability.solve_rate_vs_complexity"]]}
 ];
 function path(obj,key){return key.split(".").reduce((v,k)=>v&&Object.prototype.hasOwnProperty.call(v,k)?v[k]:undefined,obj)}

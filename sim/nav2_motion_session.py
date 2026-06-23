@@ -25,6 +25,10 @@ class NavigationLimits:
     min_forward_mps: float = 0.10
     max_reverse_mps: float = -0.30
     max_yaw_rate_radps: float = 1.00
+    max_linear_accel_mps2: float = 2.00
+    max_linear_decel_mps2: float = 2.00
+    max_yaw_accel_radps2: float = 1.20
+    max_yaw_decel_radps2: float = 1.50
     turn_slowdown_start_radps: float = 0.25
     turn_slowdown_full_radps: float = 0.65
     turn_slowdown_min_forward_mps: float = 0.05
@@ -139,6 +143,8 @@ class Nav2MotionSession:
             self.last_command=VelocityCommand()
             self.recovery_events.append({"time_s":now,"event":"command_timeout_disarm"})
         applied = self._limited_command(self.raw_command) if self.status == "RUNNING" else VelocityCommand()
+        if self.status == "RUNNING" and not stale:
+            applied = self._slewed_command(applied)
         state = base_state(self.data)
         if determine_status(applied, state, self.sandbox) == "fallen":
             self._stop("FALL_DETECTED", "fall_detected")
@@ -198,6 +204,42 @@ class Nav2MotionSession:
         else:
             vx = max(vx, reverse_limit)
         return VelocityCommand(vx=vx, vy=0.0, yaw_rate=yaw_rate)
+
+    def _slewed_command(self, target: VelocityCommand) -> VelocityCommand:
+        dt = float(getattr(self, "control_dt", 0.02))
+        current = getattr(self, "last_command", VelocityCommand())
+        return VelocityCommand(
+            vx=self._slew_axis(
+                current.vx,
+                target.vx,
+                self.limits.max_linear_accel_mps2,
+                self.limits.max_linear_decel_mps2,
+                dt,
+            ),
+            vy=0.0,
+            yaw_rate=self._slew_axis(
+                current.yaw_rate,
+                target.yaw_rate,
+                self.limits.max_yaw_accel_radps2,
+                self.limits.max_yaw_decel_radps2,
+                dt,
+            ),
+        )
+
+    @staticmethod
+    def _slew_axis(current: float, target: float, accel_limit: float, decel_limit: float, dt: float) -> float:
+        if not all(math.isfinite(value) for value in (current, target, accel_limit, decel_limit, dt)):
+            return target
+        if dt <= 0.0:
+            return target
+        same_direction = current == 0.0 or target == 0.0 or math.copysign(1.0, current) == math.copysign(1.0, target)
+        speeding_up = same_direction and abs(target) > abs(current)
+        limit = max(0.0, accel_limit if speeding_up else decel_limit)
+        max_delta = limit * dt
+        delta = target - current
+        if abs(delta) <= max_delta:
+            return target
+        return current + math.copysign(max_delta, delta)
 
     def _update_motion(self, now: float) -> None:
         state = base_state(self.data)
@@ -320,6 +362,10 @@ class Nav2MotionSession:
                 "min_forward_mps": self.limits.min_forward_mps,
                 "max_reverse_mps": self.limits.max_reverse_mps,
                 "max_yaw_rate_radps": self.limits.max_yaw_rate_radps,
+                "max_linear_accel_mps2": self.limits.max_linear_accel_mps2,
+                "max_linear_decel_mps2": self.limits.max_linear_decel_mps2,
+                "max_yaw_accel_radps2": self.limits.max_yaw_accel_radps2,
+                "max_yaw_decel_radps2": self.limits.max_yaw_decel_radps2,
                 "turn_slowdown_start_radps": self.limits.turn_slowdown_start_radps,
                 "turn_slowdown_full_radps": self.limits.turn_slowdown_full_radps,
                 "turn_slowdown_min_forward_mps": self.limits.turn_slowdown_min_forward_mps,

@@ -71,7 +71,7 @@ def render_configs(
         limits.get("controller_frequency_hz", controller.get("controller_frequency", 12.0))
     )
     follow = controller["FollowPath"]
-    follow["min_vel_x"] = float(nav_limits.get("max_reverse_mps", limits.get("max_reverse_mps", -0.30)))
+    follow["min_vel_x"] = float(limits.get("dwb_min_vel_x_mps", 0.0))
     follow["min_speed_xy"] = 0.0
     follow["max_vel_x"] = speed
     follow["max_speed_xy"] = speed
@@ -108,6 +108,12 @@ def render_configs(
         if inflation_fraction is None
         else cell_width * float(inflation_fraction)
     )
+    inflation_min = limits.get("inflation_radius_min_m")
+    if inflation_min is not None:
+        inflation_radius = max(inflation_radius, float(inflation_min))
+    inflation_max = limits.get("inflation_radius_max_m")
+    if inflation_max is not None:
+        inflation_radius = min(inflation_radius, float(inflation_max))
     limits["inflation_radius_m"] = inflation_radius
     inflation_scale = float(limits.get("inflation_cost_scaling", 1.25))
     for section in ("global_costmap", "local_costmap"):

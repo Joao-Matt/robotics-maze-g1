@@ -527,18 +527,18 @@ def svg_coverage_scatter(report: dict[str, Any]) -> str:
         if numeric(row.get("coverage_fraction")) is not None and numeric(row.get("physical_goal_error_m")) is not None
     ]
     if not rows:
-        return "<section class='plot'><h3>Coverage vs final goal error</h3><p class='muted'>No data available.</p></section>"
+        return "<section class='plot'><h3>Free-space coverage vs final goal error</h3><p class='muted'>No data available.</p></section>"
     width, height = 760, 280
     margin_left, margin_top, margin_bottom = 58, 28, 44
     plot_w, plot_h = width - margin_left - 18, height - margin_top - margin_bottom
     errors = [numeric(row["physical_goal_error_m"]) or 0.0 for row in rows]
     max_error = max(errors) or 1.0
     parts = [
-        "<section class='plot'><h3>Coverage vs final goal error</h3>",
+        "<section class='plot'><h3>Free-space coverage vs final goal error</h3>",
         f"<svg viewBox='0 0 {width} {height}' role='img'><rect width='100%' height='100%' fill='white'/>",
         f"<line x1='{margin_left}' y1='{margin_top + plot_h}' x2='{width - 12}' y2='{margin_top + plot_h}' stroke='#d9dee7'/>",
         f"<line x1='{margin_left}' y1='{margin_top}' x2='{margin_left}' y2='{margin_top + plot_h}' stroke='#d9dee7'/>",
-        f"<text x='{margin_left}' y='{height - 10}' font-size='11' fill='#6b7280'>map coverage</text>",
+        f"<text x='{margin_left}' y='{height - 10}' font-size='11' fill='#6b7280'>free-space coverage</text>",
         f"<text x='8' y='{margin_top + 10}' font-size='11' fill='#6b7280'>goal error</text>",
     ]
     for row in rows:
@@ -547,7 +547,7 @@ def svg_coverage_scatter(report: dict[str, Any]) -> str:
         x = margin_left + plot_w * max(0.0, min(1.0, coverage))
         y = margin_top + plot_h - plot_h * max(0.0, min(1.0, error / max_error))
         color = "#15803d" if row.get("success") else "#b91c1c"
-        parts.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='5' fill='{color}' opacity='0.88'><title>seed {row['seed']}: coverage {format_percent(coverage)}, error {format_number(error)} m</title></circle>")
+        parts.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='5' fill='{color}' opacity='0.88'><title>seed {row['seed']}: free-space coverage {format_percent(coverage)}, error {format_number(error)} m</title></circle>")
     parts.append("</svg></section>")
     return "".join(parts)
 
@@ -601,8 +601,8 @@ def render_html_report(report: dict[str, Any], compare: dict[str, Any] | None = 
             ("Odom translation jumps", localization["translation_jumps_total"], ""),
         ]),
         metric_block("Mapping", "Did it map enough?", [
-            ("Coverage median", mapping["coverage_median"], "%"),
-            ("Coverage p05", mapping["coverage_p05"], "%"),
+            ("Free-space coverage median", mapping["coverage_median"], "%"),
+            ("Free-space coverage p05", mapping["coverage_p05"], "%"),
             ("Known cells median", mapping["known_cells_median"], ""),
             ("Missing seeds", success["missing_count"], ""),
         ]),
@@ -659,12 +659,12 @@ h1{{font-size:24px;margin:0 0 6px}}h2{{font-size:18px;margin:24px 0 10px}}h3{{fo
 <section class="writeup">
 <h2>One-to-two-page analysis writeup</h2>
 <p><b>Design.</b> The evaluated stack is a cold-start MuJoCo/ROS 2 navigation system: simulated Livox/D435i sensing feeds sensor-derived odometry, SLAM Toolbox mapping, m-explore/Nav2 goal selection, and a Unitree G1 locomotion policy. Ground truth is recorded only for scoring and dashboard comparison, not for navigation.</p>
-<p><b>Tradeoffs.</b> The batch runner disables the live dashboard and prebuilds once to keep held-out runs comparable and low-overhead. The report favors held-out solve rate, physical goal error, contacts, localization RMSE, map coverage, schema completeness, and realtime factor over prettier online visuals. Some fine-grained live KPIs, such as inter-sensor skew and command jerk, require the per-run live stream or rosbag if they are not present in final summaries.</p>
+<p><b>Tradeoffs.</b> The batch runner disables the live dashboard and prebuilds once to keep held-out runs comparable and low-overhead. The report favors held-out solve rate, physical goal error, contacts, localization RMSE, free-space map coverage, schema completeness, and realtime factor over prettier online visuals. Some fine-grained live KPIs, such as inter-sensor skew and command jerk, require the per-run live stream or rosbag if they are not present in final summaries.</p>
 <p><b>Dominant failure modes.</b> The main observed failure categories are {escape(dominant_text)}. Failures are classified from terminal status, wall contacts, and goal/timeout outcomes. The per-seed table below links each failure back to its run directory for inspection.</p>
 <p><b>Verdict.</b> {escape(decision['text'])}{escape(compare_sentence)} This verdict should be revisited whenever the held-out seed set, cell size, duration, locomotion policy, or navigation parameters change.</p>
 </section>
 <section><h2>Plots</h2><div class="plots">{''.join(plots)}</div></section>
-<section><h2>Per-seed results</h2><table><thead><tr><th>Seed</th><th>Result</th><th>Status</th><th>Failure mode</th><th>Goal error</th><th>Path efficiency</th><th>Coverage</th><th>ATE RMSE</th><th>Run dir</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
+<section><h2>Per-seed results</h2><table><thead><tr><th>Seed</th><th>Result</th><th>Status</th><th>Failure mode</th><th>Goal error</th><th>Path efficiency</th><th>Free-space coverage</th><th>ATE RMSE</th><th>Run dir</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
 </main>
 </body>
 </html>

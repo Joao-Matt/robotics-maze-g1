@@ -21,6 +21,10 @@ explore_node:
     # Send Nav2 a rolling local lookahead toward the selected frontier instead
     # of the frontier centroid far inside unknown space.
     max_frontier_goal_distance: 3.8
+    # Keep Nav2 goals inside known FREE_SPACE cells. m-explore still chooses
+    # frontiers, but the action target becomes the nearest mapped free cell next
+    # to the selected frontier, so navigation advances one observed edge at a time.
+    goal_in_known_space: true
     gain_scale: 1.0
     min_frontier_size: 0.5
     return_to_init: false

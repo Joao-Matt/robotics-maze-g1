@@ -60,6 +60,71 @@ def occupancy_stats(data: Sequence[int]) -> dict[str, int | float]:
     }
 
 
+def free_space_coverage_stats(slam_data: Sequence[int], truth_data: Sequence[int]) -> dict[str, int | float | str]:
+    """Measure discovered SLAM cells only over ground-truth traversable maze space."""
+    if len(slam_data) != len(truth_data):
+        raise ValueError("SLAM and truth grids must have the same number of cells")
+    pairs = [(int(slam), int(truth)) for slam, truth in zip(slam_data, truth_data)]
+    valid_truth = [(slam, truth) for slam, truth in pairs if truth >= 0]
+    truth_free = [(slam, truth) for slam, truth in valid_truth if truth == 0]
+    truth_wall = [(slam, truth) for slam, truth in valid_truth if truth >= 65]
+    known_free_space = sum(1 for slam, _ in truth_free if slam >= 0)
+    known_truth_wall = sum(1 for slam, _ in truth_wall if slam >= 0)
+    correct_free_space = sum(1 for slam, _ in truth_free if slam == 0)
+    false_obstacle_in_free_space = sum(1 for slam, _ in truth_free if slam >= 65)
+    total_free = len(truth_free)
+    return {
+        "coverage_scope": "ground_truth_free_cells",
+        "coverage_fraction": known_free_space / total_free if total_free else 0.0,
+        "free_space_coverage_fraction": known_free_space / total_free if total_free else 0.0,
+        "truth_free_cells": total_free,
+        "known_free_space_cells": known_free_space,
+        "unknown_free_space_cells": max(0, total_free - known_free_space),
+        "correct_free_space_cells": correct_free_space,
+        "false_obstacle_in_free_space_cells": false_obstacle_in_free_space,
+        "truth_wall_cells": len(truth_wall),
+        "known_truth_wall_cells": known_truth_wall,
+        "truth_evaluated_cells": len(valid_truth),
+    }
+
+
+def projected_free_space_coverage_stats(
+    slam_data: Sequence[int],
+    *,
+    slam_width: int,
+    slam_height: int,
+    slam_origin_x: float,
+    slam_origin_y: float,
+    truth_data: Sequence[int],
+    truth_width: int,
+    truth_height: int,
+    truth_origin_x: float,
+    truth_origin_y: float,
+    resolution: float,
+) -> dict[str, int | float | str]:
+    """Project a SLAM grid onto a fixed truth grid before free-space scoring."""
+    if slam_width <= 0 or slam_height <= 0 or truth_width <= 0 or truth_height <= 0 or resolution <= 0.0:
+        raise ValueError("grid dimensions and resolution must be positive")
+    if len(slam_data) != slam_width * slam_height:
+        raise ValueError("SLAM data length does not match SLAM grid dimensions")
+    if len(truth_data) != truth_width * truth_height:
+        raise ValueError("truth data length does not match truth grid dimensions")
+    projected = [-1] * len(truth_data)
+    for row in range(slam_height):
+        y = slam_origin_y + (row + 0.5) * resolution
+        truth_row = math.floor((y - truth_origin_y) / resolution)
+        if truth_row < 0 or truth_row >= truth_height:
+            continue
+        for col in range(slam_width):
+            x = slam_origin_x + (col + 0.5) * resolution
+            truth_col = math.floor((x - truth_origin_x) / resolution)
+            if 0 <= truth_col < truth_width:
+                projected[truth_row * truth_width + truth_col] = int(slam_data[row * slam_width + col])
+    stats = free_space_coverage_stats(projected, truth_data)
+    stats["coverage_scope"] = "full_ground_truth_free_cells"
+    return stats
+
+
 def scan_clearance(ranges: Sequence[float], range_min: float, range_max: float) -> dict[str, float | int | None]:
     valid = [float(value) for value in ranges if math.isfinite(float(value)) and range_min <= float(value) <= range_max]
     invalid_count = len(ranges) - len(valid)
