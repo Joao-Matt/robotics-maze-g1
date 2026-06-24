@@ -80,7 +80,7 @@ global_costmap:
         plugin: nav2_costmap_2d::ObstacleLayer
         observation_sources: scan
         scan: {topic: /scan, clearing: true, marking: true, data_type: LaserScan, raytrace_max_range: 40.0, obstacle_max_range: 40.0}
-      inflation_layer: {plugin: nav2_costmap_2d::InflationLayer, inflation_radius: 0.5, cost_scaling_factor: 0.35}
+      inflation_layer: {plugin: nav2_costmap_2d::InflationLayer, inflation_radius: 0.9, cost_scaling_factor: 0.80}
       always_send_full_costmap: true
 local_costmap:
   local_costmap:
@@ -102,7 +102,7 @@ local_costmap:
         plugin: nav2_costmap_2d::ObstacleLayer
         observation_sources: scan
         scan: {topic: /scan, clearing: true, marking: true, data_type: LaserScan, raytrace_max_range: 40.0, obstacle_max_range: 40.0}
-      inflation_layer: {plugin: nav2_costmap_2d::InflationLayer, inflation_radius: 0.5, cost_scaling_factor: 0.35}
+      inflation_layer: {plugin: nav2_costmap_2d::InflationLayer, inflation_radius: 0.9, cost_scaling_factor: 0.80}
       always_send_full_costmap: true
 lifecycle_manager_navigation:
   ros__parameters:

@@ -72,6 +72,7 @@ def _run_seed(index: int, seed: int, args: argparse.Namespace, batch_dir: Path) 
         f"CONFIG={args.config}",
         "NAVIGATE_SKIP_BUILD=true",
         "NAVIGATE_DASHBOARD=false",
+        f"NAVIGATE_RECORD_BAG={'true' if args.record_bag else 'false'}",
         f"ROS_DOMAIN_ID={ros_domain_id}",
     ]
     log_path = batch_dir / "logs" / f"seed-{seed}.log"
@@ -100,6 +101,7 @@ def _write_batch_manifest(batch_dir: Path, args: argparse.Namespace, seeds: list
         "config": str(args.config),
         "jobs": args.jobs,
         "base_ros_domain_id": args.base_ros_domain_id,
+        "record_bag": bool(args.record_bag),
     }
     batch_dir.mkdir(parents=True, exist_ok=True)
     (batch_dir / "batch_manifest.json").write_text(json.dumps(values, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -117,6 +119,7 @@ def main() -> int:
     parser.add_argument("--base-ros-domain-id", type=int, default=40)
     parser.add_argument("--skip-prebuild", action="store_true")
     parser.add_argument("--fail-on-run-error", action="store_true")
+    parser.add_argument("--record-bag", action="store_true", help="Keep per-seed rosbag recording during KPI batches.")
     args = parser.parse_args()
 
     if os.environ.get("ROS_DISTRO") != "humble":

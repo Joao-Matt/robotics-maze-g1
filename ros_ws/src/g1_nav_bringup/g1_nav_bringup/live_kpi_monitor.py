@@ -179,6 +179,8 @@ class LiveKpiMonitor(Node):
             ("dashboard_rate_hz", 2.0),
             ("dashboard_visual_rate_hz", 1.0),
             ("evaluation_ground_truth_topic", "/ground_truth/odom"),
+            ("goal_reached_tolerance_m", 0.0),
+            ("goal_reached_tolerance_cell_width_fraction", 1.0),
         ):
             self.declare_parameter(name, default)
 
@@ -190,6 +192,12 @@ class LiveKpiMonitor(Node):
         self.seed = int(self.get_parameter("seed").value)
         self.duration_s = float(self.get_parameter("duration_s").value)
         self.config = self._load_config()
+        corridor_width = float(self.get_parameter("corridor_width_m").value)
+        requested_tolerance = float(self.get_parameter("goal_reached_tolerance_m").value)
+        tolerance_fraction = float(self.get_parameter("goal_reached_tolerance_cell_width_fraction").value)
+        self.goal_reached_tolerance_m = requested_tolerance if requested_tolerance > 0.0 else corridor_width * tolerance_fraction
+        self.goal_reached_tolerance_basis = "absolute_m" if requested_tolerance > 0.0 else "corridor_width_fraction"
+        self.goal_reached_tolerance_cell_width_fraction = tolerance_fraction
         self.maze, self.goal_xy, self.optimal_path_m, self.oracle_path_xy = self._maze_reference()
         self.spawn_yaw = resolve_initial_spawn_yaw(self.config, self.seed)
         self.start_world = cell_to_world_xy(self.maze, self.maze.spec.start_cell)
@@ -517,7 +525,7 @@ class LiveKpiMonitor(Node):
         recovery_events = self.motion.get("recovery_events", [])
         stuck_events = len(recovery_events) if isinstance(recovery_events, list) else 0
         realtime_factor = sim_elapsed / wall_elapsed if wall_elapsed > 1e-9 else None
-        solve_status = self._demo_solve_status(status, goal_error, bool(self.motion or self.exploration or self.actual_xy))
+        solve_status = self._demo_solve_status(status, goal_error, bool(self.motion or self.exploration or self.actual_xy), self.goal_reached_tolerance_m)
         if solve_status == "yes" and self._goal_reached_sim_s is None:
             self._goal_reached_sim_s = sim_elapsed
         time_to_goal_s = self._goal_reached_sim_s if self._goal_reached_sim_s is not None else sim_elapsed
@@ -547,7 +555,10 @@ class LiveKpiMonitor(Node):
             "success": {
                 "held_out_solve_rate": None,
                 "held_out_solve_rate_note": "aggregate-only: collect N>=20 seed summaries",
-                "single_run_goal_reached": bool(goal_error is not None and goal_error <= 0.5),
+                "single_run_goal_reached": bool(goal_error is not None and goal_error <= self.goal_reached_tolerance_m),
+                "single_run_goal_reached_tolerance_m": self.goal_reached_tolerance_m,
+                "single_run_goal_reached_tolerance_basis": self.goal_reached_tolerance_basis,
+                "single_run_goal_reached_tolerance_cell_width_fraction": self.goal_reached_tolerance_cell_width_fraction,
                 "single_run_terminal_status": status,
             },
             "mission": {
@@ -659,9 +670,9 @@ class LiveKpiMonitor(Node):
         return 0
 
     @staticmethod
-    def _demo_solve_status(status: str, goal_error: float | None, has_run_data: bool) -> str:
+    def _demo_solve_status(status: str, goal_error: float | None, has_run_data: bool, tolerance_m: float = 0.5) -> str:
         normalized = str(status or "").upper()
-        if goal_error is not None and goal_error <= 0.5:
+        if goal_error is not None and goal_error <= tolerance_m:
             return "yes"
         if normalized == "GOAL_REACHED":
             return "yes"

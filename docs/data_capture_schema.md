@@ -1,6 +1,6 @@
 # Navigation Data Capture Schema
 
-`make navigate-record` creates a dataset run with a documented schema, per-message timestamps, and repairable sidecar files. The normal `make navigate` target still records every ROS topic for broad debugging.
+`make navigate-record` creates a dataset run with a documented schema, per-message timestamps, and repairable sidecar files. Normal `make navigate`/`make navigate-full-view` runs are broad debug/demo runs; their all-topic bags are not the official dataset artifact unless they are separately captured and validated against this schema.
 
 ## What "Documented Schema" Means
 

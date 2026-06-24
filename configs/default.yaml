@@ -133,14 +133,16 @@ nav2_navigation:
   costmap_resolution_m: 0.05
   costmap_robot_radius_m: 0.45
   # Rendered per run as inflation_radius_m = cell_width_m * this fraction.
-  # Keep the inflated band narrow enough that the robot can recover near walls
-  # in 2-4 m maze corridors instead of treating most of the corridor as blocked.
-  inflation_radius_cell_width_fraction: 0.25
-  inflation_radius_m: 0.50
-  inflation_cost_scaling: 0.35
-  # Prefer clearance over tiny path-length savings. Inflation stays at 25% of
-  # corridor width, so the local planner needs obstacle cost to dominate a
-  # shortest path that skims the inflated band.
+  # Keep the inflated band wide enough to create a visible/useful wall-clearance
+  # gradient, but cap it so large corridors do not become uniformly expensive.
+  inflation_radius_cell_width_fraction: 0.45
+  inflation_radius_min_m: 0.90
+  inflation_radius_max_m: 1.35
+  inflation_radius_m: 0.90
+  inflation_cost_scaling: 0.80
+  # Prefer clearance over tiny path-length savings. The inflated band now reaches
+  # farther into 2-3 m corridors, so obstacle cost can steer the local planner
+  # away from wall-hugging shortcuts.
   obstacle_critic_scale: 32.00
   path_align_scale: 6.0
   goal_align_scale: 8.0
