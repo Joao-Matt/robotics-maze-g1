@@ -27,8 +27,10 @@ ros_ws/log/
 # Machine-local storage policy (see .env.storage.example).
 .env.storage
 
-# Mine
-chats/*
+# Local/private project notes.
+INTERVIEW_PROJECT_STORY.md
+INTERVIEW_PROJECT_STORY.pdf
+MUJOCO_LOG.TXT
 PROJECT_EXPLANATION.md
 chats/
 chats.zip
