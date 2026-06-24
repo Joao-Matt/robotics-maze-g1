@@ -26,3 +26,9 @@ ros_ws/log/
 
 # Machine-local storage policy (see .env.storage.example).
 .env.storage
+
+# Mine
+chats/*
+PROJECT_EXPLANATION.md
+chats/
+chats.zip
